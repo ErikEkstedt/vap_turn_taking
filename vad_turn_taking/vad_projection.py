@@ -60,17 +60,6 @@ def time2frames(t, sample_rate, hop_length):
 
 class VAD:
     @staticmethod
-    def vad_to_dialog_vad_states(vad) -> torch.Tensor:
-        """Vad to the full state of a 2 person vad dialog
-        0: only speaker 0
-        1: none
-        2: both
-        3: only speaker 1
-        """
-        assert vad.ndim >= 1
-        return (2 * vad[..., 1] - vad[..., 0]).long() + 1
-
-    @staticmethod
     def vad_list_to_onehot(vad, sample_rate, hop_length, duration, channel_last=False):
         n_frames = time2frames(duration, sample_rate, hop_length) + 1
 
@@ -92,6 +81,23 @@ class VAD:
             vad_tensor = vad_tensor.permute(1, 0)
 
         return vad_tensor
+
+    @staticmethod
+    def vad_to_dialog_vad_states(vad) -> torch.Tensor:
+        """Vad to the full state of a 2 person vad dialog
+        0: only speaker 0
+        1: none
+        2: both
+        3: only speaker 1
+        """
+        assert vad.ndim >= 1
+        return (2 * vad[..., 1] - vad[..., 0]).long() + 1
+
+    @staticmethod
+    def mutual_silences(vad, ds=None):
+        if ds is None:
+            ds = VAD.vad_to_dialog_vad_states(vad)
+        return ds == 1
 
     @staticmethod
     def get_current_vad_onehot(vad, end, duration, speaker, frame_size):
@@ -369,18 +375,6 @@ class VAD:
 
 class DialogEvents:
     @staticmethod
-    def mutual_silences(vad, ds=None):
-        if ds is None:
-            ds = VAD.vad_to_dialog_vad_states(vad)
-        return ds == 1
-
-    @staticmethod
-    def single_speaker(vad, ds=None):
-        if ds is None:
-            ds = VAD.vad_to_dialog_vad_states(vad)
-        return torch.logical_or(ds == 0, ds == 3)
-
-    @staticmethod
     def fill_pauses(vad, prev_speaker, next_speaker, ds):
         fill_hold = vad.clone()
         silence = ds == 1
@@ -463,7 +457,7 @@ class DialogEvents:
         if next_speaker is None:
             next_speaker = VAD.get_next_speaker(vad)
         if silence is None:
-            silence = DialogEvents.mutual_silences(vad)
+            silence = VAD.mutual_silences(vad)
 
         ab = torch.logical_and(prev_speaker == 0, next_speaker == 1)
         ab = torch.logical_and(ab, silence)
@@ -590,7 +584,7 @@ class DialogEvents:
 
         """
         bc_cands = torch.zeros_like(vad)
-        onsets = torch.zeros_like(vad)
+        # onsets = torch.zeros_like(vad)
         for b in range(vad.shape[0]):
             for sp in [0, 1]:
                 # other_active = 3 if sp == 0 else 0
@@ -636,7 +630,7 @@ class DialogEvents:
                                             start[i] : start[i] + dur[i],
                                             other_speaker,
                                         ] = 1
-        return bc_cands, onsets
+        return bc_cands
 
 
 class VadLabel:
@@ -1199,17 +1193,10 @@ def load_dm(frame_hz=100, batch_size=4, num_workers=0):
 
 if __name__ == "__main__":
 
-    from vad_projection.plot_utils import plot_events
-    from tqdm import tqdm
+    from vad_turn_taking.plot_utils import plot_events
 
     dm = load_dm()
-
     diter = iter(dm.val_dataloader())
-
-    batch = next(diter)
-
-    vad = batch["vad"]  # vad: (B, N, 2)
-    print("vad: ", tuple(vad.shape))
 
     # Shift/Hold params
     start_pad = 5
@@ -1221,7 +1208,8 @@ if __name__ == "__main__":
     bc_max_active_frames = 200  # 2 seconds
 
     batch = next(diter)
-
+    vad = batch["vad"]  # vad: (B, N, 2)
+    print("vad: ", tuple(vad.shape))
     vad = batch["vad"]
     # valid
     hold, shift = DialogEvents.on_silence(
@@ -1235,36 +1223,20 @@ if __name__ == "__main__":
     pre_hold, pre_shift = DialogEvents.get_active_pre_events(
         hold, shift, start_pad=start_pad, active_frames=active_frames
     )
-    bc_cands, _ = DialogEvents.extract_bc_candidates(
+    backchannels = DialogEvents.extract_bc_candidates(
         vad,
         pre_silence_frames=bc_pre_silence_frames,
         post_silence_frames=bc_post_silence_frames,
         max_active_frames=bc_max_active_frames,
     )
-
-    ev0 = torch.logical_or(pre_shift[..., 0], pre_hold[..., 0])
-    ev1 = torch.logical_or(pre_shift[..., 1], pre_hold[..., 1])
-    ev = torch.logical_or(ev0, ev1)
+    print("hold: ", tuple(hold.shape))
+    print("pre_hold: ", tuple(pre_hold.shape))
+    print("shift: ", tuple(shift.shape))
+    print("pre_shift: ", tuple(pre_shift.shape))
+    print("backchannels: ", tuple(backchannels.shape))
+    ev = torch.logical_or(backchannels[..., 0], backchannels[..., 1])
 
     for b in range(4):
         fig, ax = plot_events(
-            vad[b], hold=hold[b], shift=shift[b], event=ev[b], event_alpha=0.2
+            vad[b], hold=pre_hold[b], shift=pre_shift[b], event=ev[b], event_alpha=0.2
         )
-        _, _ = plot_events(vad[b], hold=bc_cands[b])
-
-    b = 0
-
-    ds = VAD.vad_to_dialog_vad_states(vad)
-    both = ds == 2
-
-    v = vad[b]
-
-    fig, ax = plot_events(
-        vad[b], hold=hold[b], shift=shift[b], event=ev[b], event_alpha=0.2
-    )
-
-    batch = next(diter)
-    vad = batch["vad"]
-    # ev = torch.logical_or(bc_cands[..., 0], bc_cands[..., 1])
-    for b in range(vad.shape[0]):
-        fig, ax = plot_events(vad[b], shift=bc_cands[b])
