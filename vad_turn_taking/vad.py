@@ -329,7 +329,9 @@ class DialogEvents:
         for speaker in [0, 1]:
             fill_oh = torch.logical_and(holds_oh, next_speaker == speaker)
             fill = torch.where(fill_oh)
-            fill_hold[(*fill, [speaker] * len(fill[0]))] = 1
+            sp_idx = torch.ones_like(fill[0], dtype=torch.long).fill_(speaker)
+            fill_val = torch.ones_like(fill[0], dtype=torch.float)
+            fill_hold[(*fill, sp_idx.long())] = fill_val
         return fill_hold
 
     @staticmethod
