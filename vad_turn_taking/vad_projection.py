@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from vad_turn_taking import VAD, time_to_frames
+from vad_turn_taking.utils import time_to_frames
+from vad_turn_taking.vad import VAD
 
 
 class VadLabel:

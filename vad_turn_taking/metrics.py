@@ -1,7 +1,8 @@
 import torch
 from torchmetrics import Metric
 
-from vad_turn_taking import time_to_frames
+from vad_turn_taking.vad import DialogEvents
+from vad_turn_taking.utils import time_to_frames
 
 
 class ShiftHoldMetric(Metric):
@@ -13,6 +14,10 @@ class ShiftHoldMetric(Metric):
         min_context=1,
         start_pad=0.25,
         target_duration=0.05,
+        pre_active=0.5,
+        bc_pre_silence=1.5,
+        bc_post_silence=3,
+        bc_max_active=2,
         frame_hz=100,
         dist_sync_on_step=False,
     ):
@@ -21,17 +26,45 @@ class ShiftHoldMetric(Metric):
         # state from multiple processes
         super().__init__(dist_sync_on_step=dist_sync_on_step)
 
-        self.add_state("hold_correct", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.add_state("hold_total", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.add_state("shift_correct", default=torch.tensor(0.0), dist_reduce_fx="sum")
-        self.add_state("shift_total", default=torch.tensor(0.0), dist_reduce_fx="sum")
-
+        self.pred_threshold = 0.5
+        # Shift/Holds
         self.frame_horizon = time_to_frames(horizon, frame_hz)
         self.frame_min_context = time_to_frames(min_context, frame_hz)
         self.frame_start_pad = time_to_frames(start_pad, frame_hz)
         self.frame_target_duration = time_to_frames(target_duration, frame_hz)
         self.frame_min_duration = self.frame_start_pad + self.frame_target_duration
-        self.pred_threshold = 0.5
+
+        # pre-active hold/shift
+        self.frame_pre_active = time_to_frames(pre_active, frame_hz)
+
+        # backchannels
+        self.bc_pre_silence_frames = time_to_frames(bc_pre_silence, frame_hz)
+        self.bc_post_silence_frames = time_to_frames(bc_post_silence, frame_hz)
+        self.bc_max_active_frames = time_to_frames(bc_max_active, frame_hz)
+
+        # Hold/Shift (on_silence) data
+        self.add_state("hold_correct", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("hold_total", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("shift_correct", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("shift_total", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+        # Pre - Hold/Shift data
+        self.add_state(
+            "pre_hold_correct", default=torch.tensor(0.0), dist_reduce_fx="sum"
+        )
+        self.add_state(
+            "pre_hold_total", default=torch.tensor(0.0), dist_reduce_fx="sum"
+        )
+        self.add_state(
+            "pre_shift_correct", default=torch.tensor(0.0), dist_reduce_fx="sum"
+        )
+        self.add_state(
+            "pre_shift_total", default=torch.tensor(0.0), dist_reduce_fx="sum"
+        )
+
+        # Backchannels
+        self.add_state("bc_correct", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("bc_total", default=torch.tensor(0.0), dist_reduce_fx="sum")
 
     def stats(self, ac, an, bc, bn):
         """
@@ -85,6 +118,19 @@ class ShiftHoldMetric(Metric):
                 bc=self.hold_correct,
                 bn=self.hold_total,
             ),
+            "pre_hold": self.stats(
+                ac=self.pre_hold_correct,
+                an=self.pre_hold_total,
+                bc=self.pre_shift_correct,
+                bn=self.pre_shift_total,
+            ),
+            "pre_shift": self.stats(
+                ac=self.pre_shift_correct,
+                an=self.pre_shift_total,
+                bc=self.pre_hold_correct,
+                bn=self.pre_hold_total,
+            ),
+            "bc": self.bc_correct / self.bc_total,
         }
 
         # Weighted F1 score
@@ -94,6 +140,11 @@ class ShiftHoldMetric(Metric):
         f1s = stats["shift"]["f1"] * stats["shift"]["support"]
         tot = stats["hold"]["support"] + stats["shift"]["support"]
         stats["f1_weighted"] = (f1h + f1s) / tot
+
+        f1h = stats["pre_hold"]["f1"] * stats["pre_hold"]["support"]
+        f1s = stats["pre_shift"]["f1"] * stats["pre_shift"]["support"]
+        tot = stats["pre_hold"]["support"] + stats["pre_shift"]["support"]
+        stats["f1_pre_weighted"] = (f1h + f1s) / tot
         return stats
 
     def extract_acc(self, p_next, shift, hold):
@@ -129,17 +180,27 @@ class ShiftHoldMetric(Metric):
             ret["hold"]["n"] += len(w[0])
         return ret
 
-    def stats_update(
-        self,
-        hold_correct,
-        hold_total,
-        shift_correct,
-        shift_total,
-    ):
-        self.hold_correct += hold_correct
-        self.hold_total += hold_total
-        self.shift_correct += shift_correct
-        self.shift_total += shift_total
+    def extract_bc_acc(self, p_next, bc):
+        ret = {"correct": 0, "n": 0}
+
+        next_speaker = 0
+        w = torch.where(bc[..., next_speaker])
+        if len(w[0]) > 0:
+            keep_turn = (
+                (p_next[w][..., next_speaker] > self.pred_threshold).sum().item()
+            )
+            ret["correct"] += keep_turn
+            ret["n"] += len(w[0])
+
+        next_speaker = 1
+        w = torch.where(bc[..., next_speaker])
+        if len(w[0]) > 0:
+            keep_turn = (
+                (p_next[w][..., next_speaker] > self.pred_threshold).sum().item()
+            )
+            ret["correct"] += keep_turn
+            ret["n"] += len(w[0])
+        return ret
 
     def update(self, p_next, vad):
         # Find valid event-frames
@@ -151,13 +212,38 @@ class ShiftHoldMetric(Metric):
             min_context=self.frame_min_context,
             min_duration=self.frame_min_duration,
         )
-
         # extract TP, FP, TN, FN
         m = self.extract_acc(p_next, shift, hold)
-
-        self.stats_update(
-            hold_correct=m["hold"]["correct"],
-            hold_total=m["hold"]["n"],
-            shift_correct=m["shift"]["correct"],
-            shift_total=m["shift"]["n"],
+        self.hold_correct += m["hold"]["correct"]
+        self.hold_total += m["hold"]["n"]
+        self.shift_correct += m["shift"]["correct"]
+        self.shift_total += m["shift"]["n"]
+        ##################################################################
+        # Find active segment pre-events
+        pre_hold, pre_shift = DialogEvents.get_active_pre_events(
+            vad,
+            hold,
+            shift,
+            start_pad=self.frame_start_pad,
+            active_frames=self.frame_pre_active,
+            min_context=self.frame_min_context,
         )
+        # extract TP, FP, TN, FN
+        m = self.extract_acc(p_next, pre_shift, pre_hold)
+        self.pre_hold_correct += m["hold"]["correct"]
+        self.pre_hold_total += m["hold"]["n"]
+        self.pre_shift_correct += m["shift"]["correct"]
+        self.pre_shift_total += m["shift"]["n"]
+
+        ##################################################################
+        # Find Backchannels
+        backchannels = DialogEvents.extract_bc_candidates(
+            vad,
+            pre_silence_frames=self.bc_pre_silence_frames,
+            post_silence_frames=self.bc_post_silence_frames,
+            max_active_frames=self.bc_max_active_frames,
+        )
+        # extract TP, FP, TN, FN
+        m = self.extract_bc_acc(p_next, backchannels)
+        self.bc_correct += m["correct"]
+        self.bc_total += m["n"]
