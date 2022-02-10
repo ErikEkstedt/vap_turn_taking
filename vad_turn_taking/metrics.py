@@ -27,6 +27,8 @@ class ShiftHoldMetric(Metric):
         super().__init__(dist_sync_on_step=dist_sync_on_step)
 
         self.pred_threshold = 0.5
+        self.frame_hz = frame_hz
+
         # Shift/Holds
         self.frame_horizon = time_to_frames(horizon, frame_hz)
         self.frame_min_context = time_to_frames(min_context, frame_hz)
@@ -65,6 +67,20 @@ class ShiftHoldMetric(Metric):
         # Backchannels
         self.add_state("bc_correct", default=torch.tensor(0.0), dist_reduce_fx="sum")
         self.add_state("bc_total", default=torch.tensor(0.0), dist_reduce_fx="sum")
+
+    def __repr__(self):
+        s = "ShiftHoldMetric("
+        s += f"\n  horizon: {self.frame_horizon}"
+        s += f"\n  min_context: {self.frame_min_context}"
+        s += f"\n  start_pad: {self.frame_start_pad}"
+        s += f"\n  target_duration: {self.frame_target_duration}"
+        s += f"\n  pre_active: {self.frame_pre_active}"
+        s += f"\n  bc_pre_silence: {self.bc_pre_silence_frames}"
+        s += f"\n  bc_post_silence: {self.bc_post_silence_frames}"
+        s += f"\n  bc_max_active: {self.bc_max_active_frames}"
+        s += f"\n  frame_hz: {self.frame_hz}"
+        s += "\n)"
+        return s
 
     def stats(self, ac, an, bc, bn):
         """
@@ -202,8 +218,7 @@ class ShiftHoldMetric(Metric):
             ret["n"] += len(w[0])
         return ret
 
-    def update(self, p_next, vad):
-        # Find valid event-frames
+    def extract_events(self, vad):
         hold, shift = DialogEvents.on_silence(
             vad,
             start_pad=self.frame_start_pad,
@@ -212,14 +227,6 @@ class ShiftHoldMetric(Metric):
             min_context=self.frame_min_context,
             min_duration=self.frame_min_duration,
         )
-        # extract TP, FP, TN, FN
-        m = self.extract_acc(p_next, shift, hold)
-        self.hold_correct += m["hold"]["correct"]
-        self.hold_total += m["hold"]["n"]
-        self.shift_correct += m["shift"]["correct"]
-        self.shift_total += m["shift"]["n"]
-        ##################################################################
-        # Find active segment pre-events
         pre_hold, pre_shift = DialogEvents.get_active_pre_events(
             vad,
             hold,
@@ -228,22 +235,42 @@ class ShiftHoldMetric(Metric):
             active_frames=self.frame_pre_active,
             min_context=self.frame_min_context,
         )
-        # extract TP, FP, TN, FN
-        m = self.extract_acc(p_next, pre_shift, pre_hold)
-        self.pre_hold_correct += m["hold"]["correct"]
-        self.pre_hold_total += m["hold"]["n"]
-        self.pre_shift_correct += m["shift"]["correct"]
-        self.pre_shift_total += m["shift"]["n"]
-
-        ##################################################################
-        # Find Backchannels
         backchannels = DialogEvents.extract_bc_candidates(
             vad,
             pre_silence_frames=self.bc_pre_silence_frames,
             post_silence_frames=self.bc_post_silence_frames,
             max_active_frames=self.bc_max_active_frames,
         )
+        return {
+            "hold": hold,
+            "shift": shift,
+            "pre_hold": pre_hold,
+            "pre_shift": pre_shift,
+            "backchannels": backchannels,
+        }
+
+    def event_update(self, p_next, events):
         # extract TP, FP, TN, FN
-        m = self.extract_bc_acc(p_next, backchannels)
+        m = self.extract_acc(p_next, events["shift"], events["hold"])
+        self.hold_correct += m["hold"]["correct"]
+        self.hold_total += m["hold"]["n"]
+        self.shift_correct += m["shift"]["correct"]
+        self.shift_total += m["shift"]["n"]
+
+        # Find active segment pre-events
+        m = self.extract_acc(p_next, events["pre_shift"], events["pre_hold"])
+        self.pre_hold_correct += m["hold"]["correct"]
+        self.pre_hold_total += m["hold"]["n"]
+        self.pre_shift_correct += m["shift"]["correct"]
+        self.pre_shift_total += m["shift"]["n"]
+
+        # Backchannels
+        m = self.extract_bc_acc(p_next, events["backchannels"])
         self.bc_correct += m["correct"]
         self.bc_total += m["n"]
+
+    def update(self, p_next, vad, events=None):
+        # Find valid event-frames
+        if events is None:
+            events = self.extract_events(vad)
+        self.event_update(p_next, events)
