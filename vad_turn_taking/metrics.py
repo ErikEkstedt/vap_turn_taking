@@ -249,28 +249,38 @@ class ShiftHoldMetric(Metric):
             "backchannels": backchannels,
         }
 
-    def event_update(self, p_next, events):
+    def event_update(self, p_next, events, bc_pre_probs=None):
         # extract TP, FP, TN, FN
-        m = self.extract_acc(p_next, events["shift"], events["hold"])
+        m = self.extract_acc(p_next, shift=events["shift"], hold=events["hold"])
         self.hold_correct += m["hold"]["correct"]
         self.hold_total += m["hold"]["n"]
         self.shift_correct += m["shift"]["correct"]
         self.shift_total += m["shift"]["n"]
 
         # Find active segment pre-events
-        m = self.extract_acc(p_next, events["pre_shift"], events["pre_hold"])
+        if bc_pre_probs is not None:
+            m = self.extract_acc(
+                bc_pre_probs, shift=events["pre_shift"], hold=events["pre_hold"]
+            )
+        else:
+            m = self.extract_acc(
+                p_next, shift=events["pre_shift"], hold=events["pre_hold"]
+            )
         self.pre_hold_correct += m["hold"]["correct"]
         self.pre_hold_total += m["hold"]["n"]
         self.pre_shift_correct += m["shift"]["correct"]
         self.pre_shift_total += m["shift"]["n"]
 
         # Backchannels
-        m = self.extract_bc_acc(p_next, events["backchannels"])
+        if bc_pre_probs is not None:
+            m = self.extract_bc_acc(bc_pre_probs, events["backchannels"])
+        else:
+            m = self.extract_bc_acc(p_next, events["backchannels"])
         self.bc_correct += m["correct"]
         self.bc_total += m["n"]
 
-    def update(self, p_next, vad, events=None):
+    def update(self, p_next, vad, events=None, bc_pre_probs=None):
         # Find valid event-frames
         if events is None:
             events = self.extract_events(vad)
-        self.event_update(p_next, events)
+        self.event_update(p_next, events, bc_pre_probs=bc_pre_probs)
