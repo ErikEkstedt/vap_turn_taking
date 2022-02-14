@@ -64,6 +64,23 @@ class VadLabel:
         v_bins = self.horizon_to_onehot(vad_projections)
         return v_bins
 
+    def comparative_activity(self, vad):
+        """
+        Sum together the activity for each speaker in the `projection_window` and get the activity
+        ratio for each speaker (focused on speaker 0)
+        p(speaker_1) = 1 - p(speaker_0)
+        vad:        torch.tensor, (B, N, 2)
+        comp:       torch.tensor, (B, N)
+        """
+        vv = vad[..., 1:, :]
+        projection_windows = vv.unfold(dimension=-2, size=sum(self.bin_sizes), step=1)
+        comp = projection_windows.sum(dim=-1)  # sum all activity for speakers
+        tot = comp.sum(dim=-1) + 1e-9  # get total activity
+        comp = (
+            comp[..., 0] / tot
+        )  # focus on speaker 0 and get ratio: p(speaker_1)= 1 - p(speaker_0)
+        return comp
+
 
 class ProjectionCodebook(nn.Module):
     def __init__(self, bin_times=[0.20, 0.40, 0.60, 0.80], frame_hz=100):

@@ -425,6 +425,10 @@ class DialogEvents:
     def on_silence(
         vad, start_pad, target_frames, horizon, min_context, min_duration=None
     ):
+        """
+        Extracts all `valid_silences` and `holds/shifts` and returns the union of both
+        such that the outputs are holds/shift at valid (future not ambiguous) locations
+        """
         if min_duration is None:
             min_duration = start_pad + target_frames
         valid, prev_speaker, next_speaker, ds = DialogEvents.find_valid_silences(
