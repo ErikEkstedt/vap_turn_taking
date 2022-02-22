@@ -72,6 +72,97 @@ def plot_vad_oh(
     return fig, ax
 
 
+def plot_projection_window(
+    proj_win,
+    bin_frames=None,
+    ax=None,
+    colors=["b", "orange"],
+    yticks=["B", "A"],
+    ylabel=None,
+    alpha=1,
+    label=(None, None),
+    legend_loc="best",
+    plot=False,
+):
+    """
+    proj_win:     torch.Tensor: (2, N)
+    """
+    fig = None
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(12, 4))
+
+    # Create X from bin_frames/oh-bins
+    if bin_frames is None:
+        x = torch.arange(proj_win.shape[1])  # 0, 1, 2, 3
+        xmax = len(x)
+        bin_lines = x[1:].tolist()
+        # add last end point n+1
+        # Using 'step' in plot and 'post' so we must add values to the right to get correct fill
+        # x: 0, 1, 2, 3, 4
+        x = torch.cat((x, x[-1:] + 1))
+    else:
+        assert (
+            len(bin_frames) == proj_win.shape[1]
+        ), "len(bin_frames) != proj_win.shape[0]"
+        if isinstance(bin_frames, torch.Tensor):
+            x = bin_frames
+        else:
+            x = torch.tensor(bin_frames)
+        # Add first 0 start point
+        # [0, 20, 40, 60, 80]
+        x = torch.cat((torch.zeros((1,)), x))
+        x = x.cumsum(0)
+        xmax = x[-1]
+        bin_lines = x[:-1].long().tolist()
+
+    # add last to match x (which includes 0)
+    proj_win = torch.cat((proj_win, proj_win[:, -1:]), dim=-1)
+
+    # Fill bins with color
+    ax.fill_between(
+        x,
+        y1=0,
+        y2=proj_win[0],
+        step="post",
+        alpha=alpha,
+        color=colors[0],
+        label=label[1],
+    )
+    ax.fill_between(
+        x,
+        y1=0,
+        y2=-proj_win[1],
+        step="post",
+        alpha=alpha,
+        label=label[0],
+        color=colors[1],
+    )
+    # Add lines separating bins
+    ax.hlines(y=0, xmin=0, xmax=xmax, color="k", linestyle="dashed")
+    for step in bin_lines:
+        ax.vlines(x=step, ymin=-1, ymax=1, color="k")
+    if label[0] is not None:
+        ax.legend(loc=legend_loc)
+
+    # set X/Y-ticks/labels
+    ax.set_xlim([0, xmax])
+    ax.set_xticks(x[:-1])
+    ax.set_xticklabels(x[:-1].tolist())
+    ax.set_ylim([-1.05, 1.05])
+    if yticks is None:
+        ax.set_yticks([])
+    else:
+        ax.set_yticks([-0.5, 0.5])
+        ax.set_yticklabels(yticks)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel)
+
+    if plot:
+        plt.tight_layout()
+        plt.pause(0.1)
+    return fig, ax
+
+
 def plot_events(
     vad,
     hold=None,

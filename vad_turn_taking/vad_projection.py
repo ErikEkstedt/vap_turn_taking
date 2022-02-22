@@ -6,6 +6,19 @@ from vad_turn_taking.utils import time_to_frames
 from vad_turn_taking.vad import VAD
 
 
+def add_start_end(x, val=[0], start=True):
+    n = x.shape[0]
+    out = []
+    for v in val:
+        pad = torch.ones(n) * v
+        if start:
+            o = torch.cat((pad.unsqueeze(1), x), dim=-1)
+        else:
+            o = torch.cat((x, pad.unsqueeze(1)), dim=-1)
+        out.append(o)
+    return torch.cat(out)
+
+
 class VadLabel:
     def __init__(self, bin_times=[0.2, 0.4, 0.6, 0.8], vad_hz=100, threshold_ratio=0.5):
         self.bin_times = bin_times
@@ -93,8 +106,11 @@ class ProjectionCodebook(nn.Module):
         self.n_classes = 2 ** self.total_bins
 
         self.codebook = self.init_codebook()
+        self.comparative_probabilities = self.init_comparative_classes()
         self.on_silent_shift, self.on_silent_hold = self.init_on_silent_shift()
+        self.on_silent_next = self.on_silent_shift
         self.on_active_shift, self.on_active_hold = self.init_on_activity_shift()
+        self.bc_active = self.init_bc_on_activity(self.n_bins)
         self.requires_grad_(False)
 
     def init_codebook(self) -> nn.Module:
@@ -211,6 +227,26 @@ class ProjectionCodebook(nn.Module):
                 x = x.unsqueeze(0)
         return x
 
+    def init_comparative_classes(self):
+        """
+        Calculates the comparative probability between the activity in each window for each speaker.
+
+        a = sum(activity_speaker_a)
+        b = sum(activity_speaker_b)
+        p_a = a / (a+b)
+        p_b = 1 - p_a
+        """
+        idx = torch.arange(self.n_classes)
+        oh = self.idx_to_onehot(idx)
+        # Extract the comparative probability for each class
+        # first is all zeros and set to equal chance
+        no_activity_prob = torch.tensor([0.5])
+        tot = oh[:, 0].sum(-1) + oh[:, 1].sum(-1)
+        a_comp = oh[1:, 0].sum(-1) / tot[1:]
+        a_comp = torch.cat([no_activity_prob, a_comp])
+        b_comp = 1 - a_comp
+        return torch.stack((a_comp, b_comp), dim=-1)
+
     def init_on_silent_shift(self):
         """
         During mutual silences we wish to infer which speaker the model deems most likely.
@@ -251,6 +287,31 @@ class ProjectionCodebook(nn.Module):
         hold = self.onehot_to_idx(hold_oh)
         hold = self._sort_idx(hold)
         return shift, hold
+
+    def init_bc_on_activity(self, n=4):
+        if n != 4:
+            raise NotImplementedError("Not implemented for bin-size != 4")
+        # After first
+        bc = [1, 0, 0, 0]
+        cur = self._all_permutations_mono(n=3, start=1)
+        cur = add_start_end(cur, val=[0, 1])
+        bc1 = self._combine_speakers(torch.tensor(bc), cur)
+        # after second
+        bc = [[1, 1, 0, 0], [0, 1, 0, 0]]
+        cur = self._all_permutations_mono(n=2, start=1)
+        cur = add_start_end(cur, val=[0, 1])
+        cur = add_start_end(cur, val=[0, 1])
+        bc2 = self._combine_speakers(torch.tensor(bc), cur)
+        # after third
+        bc = [[0, 1, 1, 0], [0, 0, 1, 0]]
+        cur = self._all_permutations_mono(n=3, start=0)
+        cur = add_start_end(cur, val=[1], start=False)
+        bc3 = self._combine_speakers(torch.tensor(bc), cur)
+        bc_cur = torch.cat((bc1, bc2, bc3))
+        bc_cur2 = bc_cur.flip(1)
+
+        bc_both = torch.stack((bc_cur, bc_cur2))
+        return self.onehot_to_idx(bc_both)
 
     def onehot_to_idx(self, x) -> torch.Tensor:
         """
@@ -393,41 +454,91 @@ def time_label_making():
     print("bin_times: ", len(VL.bin_times), " took: ", round(t, 4), "seconds")
 
 
-def load_dm(frame_hz=100, batch_size=4, num_workers=0):
-    from datasets_turntaking import DialogAudioDM
-
-    data_conf = DialogAudioDM.load_config()
-    # data_conf["dataset"]["type"] = "sliding"
-    DialogAudioDM.print_dm(data_conf)
-    dm = DialogAudioDM(
-        datasets=data_conf["dataset"]["datasets"],
-        type=data_conf["dataset"]["type"],
-        sample_rate=data_conf["dataset"]["sample_rate"],
-        audio_duration=data_conf["dataset"]["audio_duration"],
-        audio_normalize=data_conf["dataset"]["audio_normalize"],
-        audio_overlap=data_conf["dataset"]["audio_overlap"],
-        audio_context_duration=data_conf["dataset"]["audio_context_duration"],
-        ipu_min_time=data_conf["dataset"]["ipu_min_time"],
-        ipu_pause_time=data_conf["dataset"]["ipu_pause_time"],
-        vad_hz=frame_hz,
-        vad_bin_times=data_conf["dataset"]["vad_bin_times"],
-        vad_history=data_conf["dataset"]["vad_history"],
-        vad_history_times=data_conf["dataset"]["vad_history_times"],
-        batch_size=batch_size,
-        num_workers=num_workers,
-    )
-    dm.prepare_data()
-    dm.setup()
-    return dm
-
-
 if __name__ == "__main__":
-
-    from vad_turn_taking.plot_utils import plot_events
+    import matplotlib.pyplot as plt
+    import math
+    from vad_turn_taking.plot_utils import (
+        plot_events,
+        plot_vad_oh,
+        plot_projection_window,
+    )
     from vad_turn_taking import DialogEvents
+
+    from conv_ssl.evaluation.utils import load_model, load_dm
 
     dm = load_dm()
     diter = iter(dm.val_dataloader())
+
+    codebook = ProjectionCodebook()
+    print("bc: ", codebook.bc_active.shape)
+    print("sil shift: ", codebook.on_silent_shift.shape)
+    print("act shift: ", codebook.on_active_shift.shape)
+
+    next_a = codebook.idx_to_onehot(codebook.on_silent_next[0])
+    next_b = codebook.idx_to_onehot(codebook.on_silent_next[1])
+
+    a = codebook._end_of_segment_mono(codebook.n_bins, max=2)
+
+    # Always a Backchannel prediction
+    bc = [[0, 1, 0, 0], [0, 0, 1, 0], [0, 1, 1, 0]]
+    bc0 = codebook._combine_speakers(torch.tensor(bc), torch.tensor([1, 1, 1, 1]))
+    active = [[1, 1, 1, 0], [1, 0, 1, 0]]
+    bc1 = codebook._combine_speakers(torch.tensor([0, 1, 0, 0]), torch.tensor(active))
+    active = [[0, 1, 1, 1], [0, 1, 0, 1]]
+    bc2 = codebook._combine_speakers(torch.tensor([0, 0, 1, 0]), torch.tensor(active))
+    bc = torch.cat((bc0, bc1, bc2))
+
+    fig, ax = plt.subplots(bc.shape[0], 1, sharex=True)
+    for i, bb in enumerate(bc):
+        plot_projection_window(bb, ax=ax[i])  # , bin_frames=[20, 40, 60, 80])
+    plt.pause(0.1)
+
+    # Backchannel prediction
+    # bc = [[1, 0, 0, 0], [0, 1, 0, 0], [1, 1, 0, 0], [0, 1, 1, 0], [0,0,1,0]]
+
+    bc_cur = codebook.idx_to_onehot(codebook.bc_active[0])
+    cols = 5
+    rows = math.ceil(bc_cur.shape[0] / cols)
+    fig, ax = plt.subplots(rows, cols, sharex=True)
+    n = 0
+    for col in range(cols):
+        for row in range(rows):
+            if n >= bc_cur.shape[0]:
+                break
+            bb = bc_cur[n]
+            # plot_projection_window(bb, ax=ax[row, col]) #, bin_frames=[20, 40, 60, 80])
+            plot_projection_window(bb, ax=ax[row, col], bin_frames=[20, 40, 60, 80])
+            n += 1
+    plt.pause(0.1)
+
+    # Backchannel contingent on current speaker
+    fig, ax = plt.subplots(bc.shape[0], 1, sharex=True)
+    for i, bb in enumerate(bc_bcur):
+        plot_projection_window(bb, ax=ax[i])  # , bin_frames=[20, 40, 60, 80])
+    plt.pause(0.1)
+
+    # non-active channel: zeros
+    non_active = torch.zeros((1, active.shape[-1]))
+    # combine
+    shift_oh = self._combine_speakers(active, non_active, mirror=True)
+
+    codebook._all_permutations_mono(n=4, start=2)
+
+    fig, ax = plt.subplots(len(next_a), 1, sharex=True)
+    for i, oh in enumerate(next_a):
+        plot_projection_window(oh, ax=ax[i], bin_frames=[20, 40, 60, 80])
+        # plot_projection_window(oh, ax=ax[i])
+    figb, axb = plt.subplots(len(next_a), 1, sharex=True)
+    for i, oh in enumerate(next_b):
+        plot_projection_window(oh, ax=axb[i], bin_frames=[20, 40, 60, 80])
+        # plot_projection_window(oh, ax=axb[i])
+    plt.pause(0.1)
+
+    codebook.on_silent_hold
+    codebook.on_active_shift
+    codebook.on_active_hold
+
+    a_next = codebook.idx_to_onehot(codebook.on_silent_shift)
 
     # Shift/Hold params
     start_pad = 5
