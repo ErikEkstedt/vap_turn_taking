@@ -336,7 +336,7 @@ class DialogEvents:
 
     @staticmethod
     def find_valid_silences(
-        vad, horizon=150, min_context=0, min_duration=0, start_pad=0, target_frames=-1
+        vad, horizon=200, min_context=0, min_duration=0, start_pad=0, target_frames=-1
     ):
         max_frames = vad.shape[1] - horizon
 

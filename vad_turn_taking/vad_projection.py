@@ -89,9 +89,8 @@ class VadLabel:
         projection_windows = vv.unfold(dimension=-2, size=sum(self.bin_sizes), step=1)
         comp = projection_windows.sum(dim=-1)  # sum all activity for speakers
         tot = comp.sum(dim=-1) + 1e-9  # get total activity
-        comp = (
-            comp[..., 0] / tot
-        )  # focus on speaker 0 and get ratio: p(speaker_1)= 1 - p(speaker_0)
+        # focus on speaker 0 and get ratio: p(speaker_1)= 1 - p(speaker_0)
+        comp = comp[..., 0] / tot
         return comp
 
 
@@ -110,7 +109,7 @@ class ProjectionCodebook(nn.Module):
         self.on_silent_shift, self.on_silent_hold = self.init_on_silent_shift()
         self.on_silent_next = self.on_silent_shift
         self.on_active_shift, self.on_active_hold = self.init_on_activity_shift()
-        self.bc_active = self.init_bc_on_activity(self.n_bins)
+        self.bc_active = self.init_bc_prediction(self.n_bins)
         self.requires_grad_(False)
 
     def init_codebook(self) -> nn.Module:
@@ -288,16 +287,12 @@ class ProjectionCodebook(nn.Module):
         hold = self._sort_idx(hold)
         return shift, hold
 
-    def init_bc_on_activity(self, n=4):
+    def init_bc_prediction(self, n=4):
         if n != 4:
             raise NotImplementedError("Not implemented for bin-size != 4")
-        # After first
-        bc = [1, 0, 0, 0]
-        cur = self._all_permutations_mono(n=3, start=1)
-        cur = add_start_end(cur, val=[0, 1])
-        bc1 = self._combine_speakers(torch.tensor(bc), cur)
+
         # after second
-        bc = [[1, 1, 0, 0], [0, 1, 0, 0]]
+        bc = [0, 1, 0, 0]
         cur = self._all_permutations_mono(n=2, start=1)
         cur = add_start_end(cur, val=[0, 1])
         cur = add_start_end(cur, val=[0, 1])
@@ -307,7 +302,7 @@ class ProjectionCodebook(nn.Module):
         cur = self._all_permutations_mono(n=3, start=0)
         cur = add_start_end(cur, val=[1], start=False)
         bc3 = self._combine_speakers(torch.tensor(bc), cur)
-        bc_cur = torch.cat((bc1, bc2, bc3))
+        bc_cur = torch.cat((bc2, bc3))
         bc_cur2 = bc_cur.flip(1)
 
         bc_both = torch.stack((bc_cur, bc_cur2))

@@ -1,6 +1,28 @@
 import torch
 
 
+def time_to_frames(time, frame_hz):
+    if isinstance(time, list):
+        time = torch.tensor(time)
+
+    frame = time * frame_hz
+
+    if isinstance(frame, torch.Tensor):
+        frame = frame.long().tolist()
+    else:
+        frame = int(frame)
+
+    return frame
+
+
+def frame2time(f, frame_time):
+    return f * frame_time
+
+
+def time2frames(t, hop_time):
+    return int(t / hop_time)
+
+
 def find_island_idx_len(x):
     """
     Finds patches of the same value.
@@ -30,23 +52,10 @@ def find_island_idx_len(x):
     return idx, dur, x[i]
 
 
-def time_to_frames(time, frame_hz):
-    if isinstance(time, list):
-        time = torch.tensor(time)
-
-    frame = time * frame_hz
-
-    if isinstance(frame, torch.Tensor):
-        frame = frame.long().tolist()
-    else:
-        frame = int(frame)
-
-    return frame
-
-
-def frame2time(f, frame_time):
-    return f * frame_time
-
-
-def time2frames(t, hop_time):
-    return int(t / hop_time)
+def find_label_match(source_idx, target_idx):
+    match = torch.where(source_idx.unsqueeze(-1) == target_idx)
+    midx = target_idx[match[-1]]  # back to original idx
+    frames = torch.zeros_like(source_idx)
+    # Does not work on gpu: frames[match[:-1]] = 1.0
+    frames[match[:-1]] = torch.ones_like(match[0])
+    return frames, midx
