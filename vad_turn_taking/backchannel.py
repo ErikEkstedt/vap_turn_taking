@@ -60,6 +60,9 @@ def fill_until_bc_activity(bc_pred, vad, max_fill=20):
         on all frames leading up to the actual event. Therefore we may extend the 'event' (where we look for this prediction)
         until the frames of the actual activity spoken.
     """
+
+    max_frame = bc_pred.shape[1]
+
     assert (
         bc_pred.ndim == 3
     ), f"Only implemented for batched-sequences (B, N, 2) != input: {bc_pred.shape}"
@@ -75,8 +78,28 @@ def fill_until_bc_activity(bc_pred, vad, max_fill=20):
                 bc_is_close = torch.logical_and(bc_is_prior, bc_is_close)
                 w = torch.where(bc_is_close)[0]
                 if len(w) > 0:
-                    to_frame = ind[w]
-                    bc_pred[n_batch, end_bc:to_frame, speaker] = 1.0
+                    to_frame = ind[w][-1]  # take last for the longest fill
+
+                    # Omit if event occurs after datasegment
+                    # VAD information is longer than the segment the
+                    # model "sees" because of prediction horizon.
+                    to_frame = to_frame[to_frame < max_frame]
+
+                    if len(to_frame) < 1:
+                        continue
+
+                    try:
+                        # Fill region with ones
+                        filler = torch.ones(
+                            (to_frame - end_bc,),
+                            dtype=torch.long,
+                            device=bc_pred.device,
+                        )
+                        bc_pred[n_batch, end_bc:to_frame, speaker] = filler
+                    except:
+                        print("to_frame: ", to_frame)
+                        print("end_bc: ", end_bc)
+                        input()
     return bc_pred
 
 
@@ -229,17 +252,18 @@ def backchannel_prediction_events(
     bc_b = find_backchannel_prediction_single(projection_idx, bc_speaker_idx[1])
     bc_pred = torch.stack((bc_a, bc_b), dim=-1)
 
-    # 2. Fill prediction events until the actual backchannel starts
-    bc_pred = fill_until_bc_activity(bc_pred, vad, max_fill=20)
-
-    # 3. find as-real-as-prossible-backchannels based on isolation
+    # 2. find as-real-as-prossible-backchannels based on isolation
     if isolated is None:
         isolated = find_isolated_activity_on_other_active(vad, **iso_kwargs)
 
-    # 4. Match the isolated chunks with the isolated backchannel-prediction-candidate segments
+    # 3. Match the isolated chunks with the isolated backchannel-prediction-candidate segments
     bc_pred = match_bc_pred_with_isolated(
         bc_pred, isolated, prediction_window=prediction_window
     )
+
+    # 4. Fill prediction events until the actual backchannel starts
+    bc_pred = fill_until_bc_activity(bc_pred, vad, max_fill=20)
+
     return bc_pred
 
 
