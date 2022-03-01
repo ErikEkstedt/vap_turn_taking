@@ -78,7 +78,13 @@ def fill_until_bc_activity(bc_pred, vad, max_fill=20):
                 bc_is_close = torch.logical_and(bc_is_prior, bc_is_close)
                 w = torch.where(bc_is_close)[0]
                 if len(w) > 0:
-                    to_frame = ind[w][-1]  # take last for the longest fill
+
+                    # sometimes the "backchannel" consists of two smaller segments of activity
+                    # and the prediction area is close to the start of both
+                    # if this happens we simply fill until the first activity.
+                    # That is, we do not want the area for predicting a backchannel to
+                    # contain parts of the actual 'backchannel'
+                    to_frame = ind[w][0]  # take first for the longest fill
 
                     # Omit if event occurs after datasegment
                     # VAD information is longer than the segment the
@@ -88,18 +94,13 @@ def fill_until_bc_activity(bc_pred, vad, max_fill=20):
                     if len(to_frame) < 1:
                         continue
 
-                    try:
-                        # Fill region with ones
-                        filler = torch.ones(
-                            (to_frame - end_bc,),
-                            dtype=torch.long,
-                            device=bc_pred.device,
-                        )
-                        bc_pred[n_batch, end_bc:to_frame, speaker] = filler
-                    except:
-                        print("to_frame: ", to_frame)
-                        print("end_bc: ", end_bc)
-                        input()
+                    # Fill region with ones
+                    filler = torch.ones(
+                        (to_frame - end_bc,),
+                        dtype=torch.long,
+                        device=bc_pred.device,
+                    )
+                    bc_pred[n_batch, end_bc:to_frame, speaker] = filler
     return bc_pred
 
 
@@ -241,7 +242,7 @@ def backchannel_prediction_events(
     projection_idx,
     vad,
     bc_speaker_idx,
-    prediction_window=100,
+    prediction_window=50,
     isolated=None,
     iso_kwargs=dict(
         pre_silence_frames=100, post_silence_frames=150, max_active_frames=100
@@ -252,18 +253,17 @@ def backchannel_prediction_events(
     bc_b = find_backchannel_prediction_single(projection_idx, bc_speaker_idx[1])
     bc_pred = torch.stack((bc_a, bc_b), dim=-1)
 
-    # 2. find as-real-as-prossible-backchannels based on isolation
+    # 2. Fill prediction events until the actual backchannel starts
+    bc_pred = fill_until_bc_activity(bc_pred, vad, max_fill=20)
+
+    # 3. find as-real-as-prossible-backchannels based on isolation
     if isolated is None:
         isolated = find_isolated_activity_on_other_active(vad, **iso_kwargs)
 
-    # 3. Match the isolated chunks with the isolated backchannel-prediction-candidate segments
+    # 4. Match the isolated chunks with the isolated backchannel-prediction-candidate segments
     bc_pred = match_bc_pred_with_isolated(
         bc_pred, isolated, prediction_window=prediction_window
     )
-
-    # 4. Fill prediction events until the actual backchannel starts
-    bc_pred = fill_until_bc_activity(bc_pred, vad, max_fill=20)
-
     return bc_pred
 
 
@@ -375,8 +375,8 @@ if __name__ == "__main__":
     print("projection_oh: ", tuple(projection_oh.shape))
     print("projection_idx: ", tuple(projection_idx.shape))
 
+    bc_oh = codebook.idx_to_onehot(codebook.bc_active)
     n = bc_oh.shape[1]
-
     n_cols = 4
     n_rows = 7
     ii = 0
@@ -392,18 +392,17 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.show()
 
-    bc_oh = codebook.idx_to_onehot(codebook.bc_active)
-
     # Extract segments for backchannel prediction
     # Predict upcomming Backchannel
     bc_pred = backchannel_prediction_events(
         projection_idx,
         vad,
+        prediction_window=50,  # frame duration of acceptable prediction prior to bc
         bc_speaker_idx=codebook.bc_active,
         iso_kwargs=dict(
-            pre_silence_frames=150, post_silence_frames=150, max_active_frames=100
+            pre_silence_frames=100,  # minimum silence frames before bc
+            post_silence_frames=200,  # minimum post silence after bc
+            max_active_frames=100,  # max backchannel frame duration
         ),
     )
-
-    # Plot
     fig, ax = plot_backchannel_prediction(vad, bc_pred, plot=True)
