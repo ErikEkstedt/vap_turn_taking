@@ -90,9 +90,6 @@ class TurnTakingEvents:
         if self.bc_idx.device != projection_idx.device:
             self.bc_idx = self.bc_idx.to(projection_idx.device)
 
-        # print("proj_idx: ", projection_idx.device)
-        # print("vad: ", vad.device)
-        # print("bc_idx: ", self.bc_idx.device)
         ret["backchannel_prediction"] = backchannel_prediction_events(
             projection_idx,
             vad,

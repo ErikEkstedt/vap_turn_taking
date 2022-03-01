@@ -468,6 +468,7 @@ class TurnTakingMetrics(Metric):
         bc_pre_silence=1.5,
         bc_post_silence=3,
         bc_max_active=2,
+        bc_prediction_window=0.5,
         frame_hz=100,
         bin_times=[0.2, 0.4, 0.6, 0.8],
         threshold=0.5,
@@ -486,7 +487,7 @@ class TurnTakingMetrics(Metric):
             threshold=threshold, num_classes=2, multiclass=True, average="weighted"
         )
         self.bc = Accuracy(threshold=threshold)
-        self.bc_pred = Accuracy(threshold=threshold)
+        self.bc_pred = Accuracy(threshold=0.1)
 
         # Only available for discrete model
         self.discrete = discrete
@@ -513,6 +514,7 @@ class TurnTakingMetrics(Metric):
             bc_pre_silence=bc_pre_silence,
             bc_post_silence=bc_post_silence,
             bc_max_active=bc_max_active,
+            bc_prediction_window=bc_prediction_window,
             frame_hz=frame_hz,
         )
 
@@ -531,11 +533,13 @@ class TurnTakingMetrics(Metric):
         f1 = self.f1.compute()
         f1_pre = self.f1_pre.compute()
         bc_ongoing_acc = self.bc.compute()
+        bc_pred_acc = self.bc_pred.compute()
 
         ret = {
             "f1_weighted": f1["f1_weighted"],
             "f1_pre_weighted": f1_pre,
             "bc_ongoing": bc_ongoing_acc,
+            "bc_prediction": bc_pred_acc,
             "shift": f1["shift"],
             "hold": f1["hold"],
         }
