@@ -533,19 +533,18 @@ class TurnTakingMetrics(Metric):
         f1 = self.f1.compute()
         f1_pre = self.f1_pre.compute()
         bc_ongoing_acc = self.bc.compute()
-        bc_pred_acc = self.bc_pred.compute()
 
         ret = {
             "f1_weighted": f1["f1_weighted"],
             "f1_pre_weighted": f1_pre,
             "bc_ongoing": bc_ongoing_acc,
-            "bc_prediction": bc_pred_acc,
             "shift": f1["shift"],
             "hold": f1["hold"],
         }
 
         # Extra metrics for discrete model
         if self.discrete:
+            ret["bc_prediction"] = self.bc_pred.compute()
             ret["f1_pw"] = self.f1_pw.compute()
             ret["f1_pw_topk"] = self.f1_pw.compute()
 
