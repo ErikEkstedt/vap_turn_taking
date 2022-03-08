@@ -1,5 +1,8 @@
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
+import math
+from matplotlib.patches import Rectangle
 
 
 def plot_area(oh, ax, label=None, color="b", alpha=1, hatch=None):
@@ -263,4 +266,225 @@ def plot_backchannel_prediction(vad, bc_pred, plot=False):
     if plot:
         plt.pause(0.01)
 
+    return fig, ax
+
+
+#########################################################################
+# Plot multiple projection windows
+#########################################################################
+def plot_all_projection_windows(
+    proj_wins, bin_times=[0.2, 0.4, 0.6, 0.8], vad_hz=100, plot=True
+):
+    bin_frames = [b * vad_hz for b in bin_times]
+    n = proj_wins.shape[0]
+    n_cols = 4
+    n_rows = math.ceil(n / n_cols)
+    figsize = (4 * n_cols, 3 * n_rows)
+    print("n: ", n)
+    print("(cols,rows): ", n_cols, n_rows)
+    print("figsize: ", figsize)
+    if n_rows == 1:
+        fig, ax = plt.subplots(1, n_cols, sharex=True, sharey=True, figsize=figsize)
+        for col in range(n_cols):
+            if col >= n:
+                break
+            _ = plot_projection_window(
+                proj_wins[col], bin_frames=bin_frames, ax=ax[col]
+            )
+        ax[0].set_xticks([])
+        ax[0].set_yticks([])
+    else:
+        i = 0
+        fig, ax = plt.subplots(
+            n_rows, n_cols, sharex=True, sharey=True, figsize=figsize
+        )
+        for row in range(n_rows):
+            for col in range(n_cols):
+                _ = plot_projection_window(
+                    proj_wins[i], bin_frames=bin_frames, ax=ax[row, col]
+                )
+                i += 1
+                if i >= n:
+                    break
+            if i >= n:
+                break
+
+        ax[0, 0].set_xticks([])
+        ax[0, 0].set_yticks([])
+    plt.tight_layout()
+    if plot:
+        plt.pause(0.1)
+
+    return fig, ax
+
+
+#########################################################################
+# Template
+#########################################################################
+def plot_template(
+    projection_type,
+    prefix_type,
+    bin_times=[0.2, 0.4, 0.6, 0.8],
+    alpha_required=0.6,
+    alpha_optional=0.2,
+    alpha_prefix=0.6,
+    pad=0.02,
+    plot=False,
+):
+    assert projection_type in [
+        "shift",
+        "bc_prediction",
+    ], "projection type must be in ['shift', 'bc_prediction']"
+    assert prefix_type in [
+        "silence",
+        "active",
+        "overlap",
+    ], "prefix type must be in ['silence', 'active', 'overlap']"
+
+    colors = ["b", "orange"]
+    current = 1.5
+    bins = [current] + (np.array(bin_times).cumsum(0) + current).tolist()
+
+    fig, ax = plt.subplots(1, 1)
+    handles = []
+    ax.hlines(y=0, xmin=0, xmax=bins[-1], linewidth=2, color="k")
+    # Draw current line
+    ax.vlines(current, ymin=-1, ymax=1, linewidth=5, color="r", label="current time")
+    # current, = ax.plot([current, current], [-1, 1], linewidth=5, color="r", label='current time')
+    # handles.append(current)
+
+    #######################################################################
+    # Draw prefix boxes
+    #######################################################################
+    if prefix_type == "silence":
+        ax.add_patch(
+            Rectangle(
+                xy=(0, -1),
+                width=1,
+                height=1,
+                facecolor=colors[1],
+                alpha=alpha_prefix,
+                edgecolor=colors[1],
+            )
+        )
+    else:
+        ax.add_patch(
+            Rectangle(
+                xy=(0, -1),
+                width=1.5,
+                height=1,
+                facecolor=colors[1],
+                alpha=alpha_prefix,
+                edgecolor=colors[1],
+            )
+        )
+        if prefix_type == "overlap":
+            ax.add_patch(
+                Rectangle(
+                    xy=(1, 0),
+                    width=0.5,
+                    height=1,
+                    facecolor=colors[0],
+                    edgecolor=colors[0],
+                )
+            )
+
+    #######################################################################
+    # Projection Window Template
+    #######################################################################
+    if projection_type == "shift":
+        # Optional
+        optional_a = Rectangle(
+            xy=(current, 0),
+            width=bins[2] - bins[0],
+            height=1,
+            label="A optional",
+            facecolor=colors[0],
+            alpha=alpha_optional,
+            edgecolor=colors[0],
+        )
+        handles.append(optional_a)
+        ax.add_patch(optional_a)
+
+        # Required
+        required_a = Rectangle(
+            xy=(bins[2], 0),
+            width=bins[-1] - bins[2],
+            height=1,
+            label="A required",
+            facecolor=colors[0],
+            alpha=alpha_required,
+            hatch=".",
+            edgecolor=colors[0],
+        )
+        handles.append(required_a)
+        ax.add_patch(required_a)
+        if prefix_type != "silence":
+            # Optional B
+            optional_b = Rectangle(
+                xy=(current, -1),
+                width=bins[2] - bins[0],
+                height=1,
+                label="B optional",
+                facecolor=colors[1],
+                alpha=alpha_optional,
+                edgecolor=colors[1],
+            )
+            handles.append(optional_b)
+            ax.add_patch(optional_b)
+    elif projection_type == "bc_prediction":
+        # A at least one
+        a_one = Rectangle(
+            xy=(current, 0),
+            width=bins[3] - bins[0],
+            height=1,
+            label="A at least 1",
+            facecolor=colors[0],
+            alpha=0.2,
+            edgecolor=colors[0],
+            hatch="//",
+        )
+        handles.append(a_one)
+        ax.add_patch(a_one)
+        # B optional
+        optional_b = Rectangle(
+            xy=(current, -1),
+            width=bins[3] - bins[0],
+            height=1,
+            label="B optional",
+            facecolor=colors[1],
+            alpha=alpha_optional,
+            edgecolor=colors[1],
+        )
+        handles.append(optional_b)
+        ax.add_patch(optional_b)
+
+        # B required
+        required_b = Rectangle(
+            xy=(bins[3], -1),
+            width=bins[-1] - bins[3],
+            height=1,
+            label="B required",
+            facecolor=colors[1],
+            alpha=alpha_required,
+            hatch=".",
+            edgecolor=colors[1],
+        )
+        handles.append(required_b)
+        ax.add_patch(required_b)
+
+    # Draw lines for projection window template
+    ax.vlines(bins[1:-1], ymin=-1, ymax=1, linewidth=2, color="k")
+    ax.hlines(y=[-1, 1], xmin=1.5, xmax=bins[-1], linewidth=2, color="k")
+    ax.vlines(bins[-1], ymin=-1, ymax=1, linewidth=2, color="k")
+    ax.set_yticks([])
+    ax.set_xticks([])
+    ax.set_xlim([0, bins[-1] + 0.05])
+    ax.legend(loc="upper left", handles=handles)
+
+    plt.subplots_adjust(
+        left=pad, bottom=pad, right=1 - pad, top=1 - pad, wspace=None, hspace=None
+    )
+    if plot:
+        plt.pause(0.1)
     return fig, ax

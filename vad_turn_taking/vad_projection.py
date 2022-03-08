@@ -451,134 +451,61 @@ def time_label_making():
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    import math
-    from vad_turn_taking.plot_utils import (
-        plot_events,
-        plot_vad_oh,
-        plot_projection_window,
-    )
-    from vad_turn_taking import DialogEvents
-
-    from conv_ssl.evaluation.utils import load_model, load_dm
+    from vad_turn_taking.plot_utils import plot_all_projection_windows, plot_template
+    from vad_turn_taking.events import TurnTakingEvents
+    from conv_ssl.evaluation.utils import load_dm
 
     dm = load_dm()
     diter = iter(dm.val_dataloader())
 
-    codebook = ProjectionCodebook()
+    bin_times = [0.2, 0.4, 0.6, 0.8]
+    vad_hz = 100
+    event_kwargs = {
+        "event_pre": 0.5,
+        "event_min_context": 1.0,
+        "event_min_duration": 0.15,
+        "event_horizon": 2.0,
+        "event_start_pad": 0.05,
+        "event_target_duration": 0.10,
+        "event_bc_pre_silence": 1,
+        "event_bc_post_silence": 2,
+        "event_bc_max_active": 1,
+        "event_bc_prediction_window": 0.5,
+    }
+    codebook = ProjectionCodebook(bin_times=bin_times)
+    labeler = VadLabel(bin_times=bin_times, vad_hz=vad_hz)
+    eventer = TurnTakingEvents(
+        bc_idx=codebook.bc_active,
+        horizon=event_kwargs["event_horizon"],
+        min_context=event_kwargs["event_min_context"],
+        start_pad=event_kwargs["event_start_pad"],
+        target_duration=event_kwargs["event_target_duration"],
+        pre_active=event_kwargs["event_pre"],
+        bc_pre_silence=event_kwargs["event_bc_pre_silence"],
+        bc_post_silence=event_kwargs["event_bc_post_silence"],
+        bc_max_active=event_kwargs["event_bc_max_active"],
+        bc_prediction_window=event_kwargs["event_bc_prediction_window"],
+        frame_hz=vad_hz,
+    )
+
     print("bc: ", codebook.bc_active.shape)
     print("sil shift: ", codebook.on_silent_shift.shape)
     print("act shift: ", codebook.on_active_shift.shape)
 
-    next_a = codebook.idx_to_onehot(codebook.on_silent_next[0])
-    next_b = codebook.idx_to_onehot(codebook.on_silent_next[1])
+    # proj_wins = codebook.idx_to_onehot(codebook.on_silent_shift[0])  # N, 2, n_bins
+    proj_wins = codebook.idx_to_onehot(codebook.on_active_shift[0])  # N, 2, n_bins
+    proj_wins = codebook.idx_to_onehot(codebook.bc_active[0])  # N, 2, n_bins
 
-    a = codebook._end_of_segment_mono(codebook.n_bins, max=2)
+    _ = plot_all_projection_windows(proj_wins)
 
-    # Always a Backchannel prediction
-    bc = [[0, 1, 0, 0], [0, 0, 1, 0], [0, 1, 1, 0]]
-    bc0 = codebook._combine_speakers(torch.tensor(bc), torch.tensor([1, 1, 1, 1]))
-    active = [[1, 1, 1, 0], [1, 0, 1, 0]]
-    bc1 = codebook._combine_speakers(torch.tensor([0, 1, 0, 0]), torch.tensor(active))
-    active = [[0, 1, 1, 1], [0, 1, 0, 1]]
-    bc2 = codebook._combine_speakers(torch.tensor([0, 0, 1, 0]), torch.tensor(active))
-    bc = torch.cat((bc0, bc1, bc2))
+    # Template figures
 
-    fig, ax = plt.subplots(bc.shape[0], 1, sharex=True)
-    for i, bb in enumerate(bc):
-        plot_projection_window(bb, ax=ax[i])  # , bin_frames=[20, 40, 60, 80])
-    plt.pause(0.1)
-
-    # Backchannel prediction
-    # bc = [[1, 0, 0, 0], [0, 1, 0, 0], [1, 1, 0, 0], [0, 1, 1, 0], [0,0,1,0]]
-
-    bc_cur = codebook.idx_to_onehot(codebook.bc_active[0])
-    cols = 5
-    rows = math.ceil(bc_cur.shape[0] / cols)
-    fig, ax = plt.subplots(rows, cols, sharex=True)
-    n = 0
-    for col in range(cols):
-        for row in range(rows):
-            if n >= bc_cur.shape[0]:
-                break
-            bb = bc_cur[n]
-            # plot_projection_window(bb, ax=ax[row, col]) #, bin_frames=[20, 40, 60, 80])
-            plot_projection_window(bb, ax=ax[row, col], bin_frames=[20, 40, 60, 80])
-            n += 1
-    plt.pause(0.1)
-
-    # Backchannel contingent on current speaker
-    fig, ax = plt.subplots(bc.shape[0], 1, sharex=True)
-    for i, bb in enumerate(bc_bcur):
-        plot_projection_window(bb, ax=ax[i])  # , bin_frames=[20, 40, 60, 80])
-    plt.pause(0.1)
-
-    # non-active channel: zeros
-    non_active = torch.zeros((1, active.shape[-1]))
-    # combine
-    shift_oh = self._combine_speakers(active, non_active, mirror=True)
-
-    codebook._all_permutations_mono(n=4, start=2)
-
-    fig, ax = plt.subplots(len(next_a), 1, sharex=True)
-    for i, oh in enumerate(next_a):
-        plot_projection_window(oh, ax=ax[i], bin_frames=[20, 40, 60, 80])
-        # plot_projection_window(oh, ax=ax[i])
-    figb, axb = plt.subplots(len(next_a), 1, sharex=True)
-    for i, oh in enumerate(next_b):
-        plot_projection_window(oh, ax=axb[i], bin_frames=[20, 40, 60, 80])
-        # plot_projection_window(oh, ax=axb[i])
-    plt.pause(0.1)
-
-    codebook.on_silent_hold
-    codebook.on_active_shift
-    codebook.on_active_hold
-
-    a_next = codebook.idx_to_onehot(codebook.on_silent_shift)
-
-    # Shift/Hold params
-    start_pad = 5
-    min_context = 50
-    active_frames = 50
-    # Backchannel params
-    bc_pre_silence_frames = 150  # 1.5 seconds
-    bc_post_silence_frames = 300  # 3 seconds
-    bc_max_active_frames = 200  # 2 seconds
-
-    batch = next(diter)
-    vad = batch["vad"]  # vad: (B, N, 2)
-    print("vad: ", tuple(vad.shape))
-    vad = batch["vad"]
-    # valid
-    hold, shift = DialogEvents.on_silence(
-        vad,
-        start_pad=start_pad,
-        target_frames=50,
-        horizon=100,
-        min_context=min_context,
-    )
-    # Find active segment pre-events
-    pre_hold, pre_shift = DialogEvents.get_active_pre_events(
-        vad,
-        hold,
-        shift,
-        start_pad=start_pad,
-        active_frames=active_frames,
-        min_context=min_context,
-    )
-    backchannels = DialogEvents.extract_bc_candidates(
-        vad,
-        pre_silence_frames=bc_pre_silence_frames,
-        post_silence_frames=bc_post_silence_frames,
-        max_active_frames=bc_max_active_frames,
-    )
-    print("hold: ", tuple(hold.shape))
-    print("pre_hold: ", tuple(pre_hold.shape))
-    print("shift: ", tuple(shift.shape))
-    print("pre_shift: ", tuple(pre_shift.shape))
-    print("backchannels: ", tuple(backchannels.shape))
-    ev = torch.logical_or(backchannels[..., 0], backchannels[..., 1])
-
-    for b in range(4):
-        fig, ax = plot_events(
-            vad[b], hold=pre_hold[b], shift=pre_shift[b], event=ev[b], event_alpha=0.2
-        )
+    # fig, ax = plot_template(projection_type="bc_prediction", prefix_type="silence")
+    # fig, ax = plot_template(projection_type="bc_prediction", prefix_type="active")
+    # fig, ax = plot_template(projection_type="shift", prefix_type="silence")
+    # fig, ax = plot_template(projection_type="shift", prefix_type="active")
+    fig, ax = plot_template(projection_type="shift", prefix_type="overlap")
+    plt.show()
+    # Turn-shift
+    # BC-Prediction
+    # BC-Ongoing
