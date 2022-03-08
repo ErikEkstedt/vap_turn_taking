@@ -273,13 +273,13 @@ def plot_backchannel_prediction(vad, bc_pred, plot=False):
 # Plot multiple projection windows
 #########################################################################
 def plot_all_projection_windows(
-    proj_wins, bin_times=[0.2, 0.4, 0.6, 0.8], vad_hz=100, plot=True
+    proj_wins, bin_times=[0.2, 0.4, 0.6, 0.8], vad_hz=100, figsize=(12, 9), plot=True
 ):
     bin_frames = [b * vad_hz for b in bin_times]
     n = proj_wins.shape[0]
     n_cols = 4
     n_rows = math.ceil(n / n_cols)
-    figsize = (4 * n_cols, 3 * n_rows)
+    # figsize = (4 * n_cols, 3 * n_rows)
     print("n: ", n)
     print("(cols,rows): ", n_cols, n_rows)
     print("figsize: ", figsize)

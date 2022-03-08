@@ -19,6 +19,29 @@ def add_start_end(x, val=[0], start=True):
     return torch.cat(out)
 
 
+def independent_bc_prediction(probs, bc_activity_threshold=0.0):
+    bc_pred = []
+    for current_speaker, backchanneler in zip([1, 0], [0, 1]):
+        # Between speaker diff
+        # is the last bin of the "backchanneler" less probable than last bin of current speaker?
+        last_a_lt_b = probs[..., backchanneler, -1] < probs[..., current_speaker, -1]
+        # within speaker diff
+        mid_a_max, _ = probs[..., backchanneler, :-1].max(dim=-1)
+        # Is the start/middle bins of the "backchanneler" greater than the last bin?
+        # i.e. does it predict an ending response?
+        mid_a_gt_last = mid_a_max > probs[..., backchanneler, -1]
+        if bc_activity_threshold > 0:
+            mid_a_gt_last = torch.logical_and(
+                mid_a_gt_last, mid_a_max >= bc_activity_threshold
+            )
+        tmp_bc_pred = torch.logical_and(last_a_lt_b, mid_a_gt_last)
+        bc_pred.append(tmp_bc_pred)
+    bc_pred = torch.stack(bc_pred, dim=-1)
+    # bool -> float
+    bc_pred = 1.0 * bc_pred
+    return bc_pred
+
+
 class VadLabel:
     def __init__(self, bin_times=[0.2, 0.4, 0.6, 0.8], vad_hz=100, threshold_ratio=0.5):
         self.bin_times = bin_times
@@ -94,6 +117,77 @@ class VadLabel:
         return comp
 
 
+class WindowHelper:
+    @staticmethod
+    def all_permutations_mono(n, start=0):
+        vectors = []
+        for i in range(start, 2 ** n):
+            i = bin(i).replace("0b", "").zfill(n)
+            tmp = torch.zeros(n)
+            for j, val in enumerate(i):
+                tmp[j] = float(val)
+            vectors.append(tmp)
+        return torch.stack(vectors)
+
+    @staticmethod
+    def end_of_segment_mono(n, max=3):
+        """
+        # 0, 0, 0, 0
+        # 1, 0, 0, 0
+        # 1, 1, 0, 0
+        # 1, 1, 1, 0
+        """
+        v = torch.zeros((max + 1, n))
+        for i in range(max):
+            v[i + 1, : i + 1] = 1
+        return v
+
+    @staticmethod
+    def on_activity_change_mono(n=4, min_active=2):
+        """
+
+        Used where a single speaker is active. This vector (single speaker) represents
+        the classes we use to infer that the current speaker will end their activity
+        and the other take over.
+
+        the `min_active` variable corresponds to the minimum amount of frames that must
+        be active AT THE END of the projection window (for the next active speaker).
+        This used to not include classes where the activity may correspond to a short backchannel.
+        e.g. if only the last bin is active it may be part of just a short backchannel, if we require 2 bins to
+        be active we know that the model predicts that the continuation will be at least 2 bins long and thus
+        removes the ambiguouty (to some extent) about the prediction.
+        """
+
+        base = torch.zeros(n)
+        # force activity at the end
+        if min_active > 0:
+            base[-min_active:] = 1
+
+        # get all permutations for the remaining bins
+        permutable = n - min_active
+        if permutable > 0:
+            perms = WindowHelper.all_permutations_mono(permutable)
+            base = base.repeat(perms.shape[0], 1)
+            base[:, :permutable] = perms
+        return base
+
+    @staticmethod
+    def combine_speakers(x1, x2, mirror=False):
+        if x1.ndim == 1:
+            x1 = x1.unsqueeze(0)
+        if x2.ndim == 1:
+            x2 = x2.unsqueeze(0)
+        vad = []
+        for a in x1:
+            for b in x2:
+                vad.append(torch.stack((a, b), dim=0))
+
+        vad = torch.stack(vad)
+        if mirror:
+            vad = torch.stack((vad, torch.stack((vad[:, 1], vad[:, 0]), dim=1)))
+        return vad
+
+
 class ProjectionCodebook(nn.Module):
     def __init__(self, bin_times=[0.20, 0.40, 0.60, 0.80], frame_hz=100):
         super().__init__()
@@ -105,11 +199,11 @@ class ProjectionCodebook(nn.Module):
         self.n_classes = 2 ** self.total_bins
 
         self.codebook = self.init_codebook()
-        self.comparative_probabilities = self.init_comparative_classes()
+        self.comp_silent, self.comp_active = self.init_comparative_classes()
         self.on_silent_shift, self.on_silent_hold = self.init_on_silent_shift()
         self.on_silent_next = self.on_silent_shift
         self.on_active_shift, self.on_active_hold = self.init_on_activity_shift()
-        self.bc_active = self.init_bc_prediction(self.n_bins)
+        self.bc_prediction = self.init_bc_prediction()
         self.requires_grad_(False)
 
     def init_codebook(self) -> nn.Module:
@@ -148,71 +242,6 @@ class ProjectionCodebook(nn.Module):
         codebook.weight.requires_grad_(False)
         return codebook
 
-    def _all_permutations_mono(self, n, start=0):
-        vectors = []
-        for i in range(start, 2 ** n):
-            i = bin(i).replace("0b", "").zfill(n)
-            tmp = torch.zeros(n)
-            for j, val in enumerate(i):
-                tmp[j] = float(val)
-            vectors.append(tmp)
-        return torch.stack(vectors)
-
-    def _end_of_segment_mono(self, n, max=3):
-        """
-        # 0, 0, 0, 0
-        # 1, 0, 0, 0
-        # 1, 1, 0, 0
-        # 1, 1, 1, 0
-        """
-        v = torch.zeros((max + 1, n))
-        for i in range(max):
-            v[i + 1, : i + 1] = 1
-        return v
-
-    def _on_activity_change_mono(self, n=4, min_active=2):
-        """
-
-        Used where a single speaker is active. This vector (single speaker) represents
-        the classes we use to infer that the current speaker will end their activity
-        and the other take over.
-
-        the `min_active` variable corresponds to the minimum amount of frames that must
-        be active AT THE END of the projection window (for the next active speaker).
-        This used to not include classes where the activity may correspond to a short backchannel.
-        e.g. if only the last bin is active it may be part of just a short backchannel, if we require 2 bins to
-        be active we know that the model predicts that the continuation will be at least 2 bins long and thus
-        removes the ambiguouty (to some extent) about the prediction.
-        """
-
-        base = torch.zeros(n)
-        # force activity at the end
-        if min_active > 0:
-            base[-min_active:] = 1
-
-        # get all permutations for the remaining bins
-        permutable = n - min_active
-        if permutable > 0:
-            perms = self._all_permutations_mono(permutable)
-            base = base.repeat(perms.shape[0], 1)
-            base[:, :permutable] = perms
-        return base
-
-    def _combine_speakers(self, x1, x2, mirror=False):
-        if x1.ndim == 1:
-            x1 = x1.unsqueeze(0)
-        if x2.ndim == 1:
-            x2 = x2.unsqueeze(0)
-        vad = []
-        for a in x1:
-            for b in x2:
-                vad.append(torch.stack((a, b), dim=0))
-
-        vad = torch.stack(vad)
-        if mirror:
-            vad = torch.stack((vad, torch.stack((vad[:, 1], vad[:, 0]), dim=1)))
-        return vad
-
     def _sort_idx(self, x):
         if x.ndim == 1:
             x, _ = x.sort()
@@ -230,21 +259,32 @@ class ProjectionCodebook(nn.Module):
         """
         Calculates the comparative probability between the activity in each window for each speaker.
 
-        a = sum(activity_speaker_a)
-        b = sum(activity_speaker_b)
+        a = sum(scale*activity_speaker_a)
+        b = sum(scale*activity_speaker_b)
         p_a = a / (a+b)
         p_b = 1 - p_a
         """
+
+        def oh_to_prob(oh):
+            tot = oh.sum(dim=-1).sum(dim=-1)
+            a_comp = oh[:, 0].sum(-1) / (tot + 1e-9)
+            # No activity counts as equal
+            a_comp[a_comp == 0] = 0.5
+            b_comp = 1 - a_comp
+            return torch.stack((a_comp, b_comp), dim=-1)
+
+        # get all onehot-states
         idx = torch.arange(self.n_classes)
-        oh = self.idx_to_onehot(idx)
-        # Extract the comparative probability for each class
-        # first is all zeros and set to equal chance
-        no_activity_prob = torch.tensor([0.5])
-        tot = oh[:, 0].sum(-1) + oh[:, 1].sum(-1)
-        a_comp = oh[1:, 0].sum(-1) / tot[1:]
-        a_comp = torch.cat([no_activity_prob, a_comp])
-        b_comp = 1 - a_comp
-        return torch.stack((a_comp, b_comp), dim=-1)
+
+        # normalize bin size weights -> adds to one
+        scale_bins = torch.tensor(self.bin_sizes, dtype=torch.float)
+        scale_bins /= scale_bins.sum()
+
+        # scale the bins of the onehot-states
+        oh = scale_bins * self.idx_to_onehot(idx)
+        comp_silent = oh_to_prob(oh)
+        comp_active = oh_to_prob(oh[..., 2:])
+        return comp_silent, comp_active
 
     def init_on_silent_shift(self):
         """
@@ -258,11 +298,11 @@ class ProjectionCodebook(nn.Module):
         # active channel: At least 1 bin is active -> all permutations (all except the no-activity)
         # active = self._all_permutations_mono(n, start=1)  # at least 1 active
         # active channel: At least 1 bin is active -> all permutations (all except the no-activity)
-        active = self._on_activity_change_mono(self.n_bins, min_active=2)
+        active = WindowHelper.on_activity_change_mono(self.n_bins, min_active=2)
         # non-active channel: zeros
         non_active = torch.zeros((1, active.shape[-1]))
         # combine
-        shift_oh = self._combine_speakers(active, non_active, mirror=True)
+        shift_oh = WindowHelper.combine_speakers(active, non_active, mirror=True)
         shift = self.onehot_to_idx(shift_oh)
         shift = self._sort_idx(shift)
 
@@ -272,17 +312,18 @@ class ProjectionCodebook(nn.Module):
         return shift, hold
 
     def init_on_activity_shift(self):
+        """On activity"""
         # Shift subset
-        eos = self._end_of_segment_mono(self.n_bins, max=2)
-        nav = self._on_activity_change_mono(self.n_bins, min_active=2)
-        shift_oh = self._combine_speakers(nav, eos, mirror=True)
+        eos = WindowHelper.end_of_segment_mono(self.n_bins, max=2)
+        nav = WindowHelper.on_activity_change_mono(self.n_bins, min_active=2)
+        shift_oh = WindowHelper.combine_speakers(nav, eos, mirror=True)
         shift = self.onehot_to_idx(shift_oh)
         shift = self._sort_idx(shift)
 
         # Don't shift subset
-        eos = self._on_activity_change_mono(self.n_bins, min_active=2)
+        eos = WindowHelper.on_activity_change_mono(self.n_bins, min_active=2)
         zero = torch.zeros((1, self.n_bins))
-        hold_oh = self._combine_speakers(zero, eos, mirror=True)
+        hold_oh = WindowHelper.combine_speakers(zero, eos, mirror=True)
         hold = self.onehot_to_idx(hold_oh)
         hold = self._sort_idx(hold)
         return shift, hold
@@ -291,21 +332,17 @@ class ProjectionCodebook(nn.Module):
         if n != 4:
             raise NotImplementedError("Not implemented for bin-size != 4")
 
-        # after second
-        bc = [0, 1, 0, 0]
-        cur = self._all_permutations_mono(n=2, start=1)
-        cur = add_start_end(cur, val=[0, 1])
-        cur = add_start_end(cur, val=[0, 1])
-        bc2 = self._combine_speakers(torch.tensor(bc), cur)
-        # after third
-        bc = [[0, 1, 1, 0], [0, 0, 1, 0]]
-        cur = self._all_permutations_mono(n=3, start=0)
-        cur = add_start_end(cur, val=[1], start=False)
-        bc3 = self._combine_speakers(torch.tensor(bc), cur)
-        bc_cur = torch.cat((bc2, bc3))
-        bc_cur2 = bc_cur.flip(1)
+        # at least 1 bin active over 3 bins
+        bc_speaker = WindowHelper.all_permutations_mono(n=3, start=1)
+        bc_speaker = torch.cat(
+            (bc_speaker, torch.zeros((bc_speaker.shape[0], 1))), dim=-1
+        )
 
-        bc_both = torch.stack((bc_cur, bc_cur2))
+        # all permutations of 3 bins
+        current = WindowHelper.all_permutations_mono(n=3, start=0)
+        current = torch.cat((current, torch.ones((current.shape[0], 1))), dim=-1)
+
+        bc_both = WindowHelper.combine_speakers(bc_speaker, current, mirror=True)
         return self.onehot_to_idx(bc_both)
 
     def onehot_to_idx(self, x) -> torch.Tensor:
@@ -353,13 +390,25 @@ class ProjectionCodebook(nn.Module):
     def get_active_shift_probs(self, probs):
         return self.get_marginal_probs(probs, self.on_active_shift, self.on_active_hold)
 
-    def get_next_speaker_probs(self, logits, vad):
-        probs = logits.softmax(dim=-1)
+    def get_next_speaker_probs(self, logits=None, vad=None, probs=None, pw=False):
+        """
+        Extracts the probabilities for who the next speaker is dependent on what the current moment is.
+
+        This means that on mutual silences we use the 'silence'-subset,
+        where a single speaker is active we use the 'active'-subset and where on overlaps
+        """
+
+        if probs is None:
+            probs = logits.softmax(dim=-1)
+
         sil_probs = self.get_silence_shift_probs(probs)
         act_probs = self.get_active_shift_probs(probs)
 
         p_a = torch.zeros_like(sil_probs[..., 0])
         p_b = torch.zeros_like(sil_probs[..., 0])
+
+        pw_a = None
+        pw_b = None
 
         # dialog states
         ds = VAD.vad_to_dialog_vad_states(vad)
@@ -373,15 +422,40 @@ class ProjectionCodebook(nn.Module):
         p_a[w] = sil_probs[w][..., 0]
         p_b[w] = sil_probs[w][..., 1]
 
+        if pw:
+            pw_a = torch.zeros_like(sil_probs[..., 0])
+            pw_b = torch.zeros_like(sil_probs[..., 0])
+
+            # comparative silent
+            comp_sil = probs.unsqueeze(-1) * self.comp_silent.unsqueeze(0).to(
+                probs.device
+            )
+            comp_sil = comp_sil.sum(dim=-2)  # sum over classes
+
+            # comparative active
+            comp_act = probs.unsqueeze(-1) * self.comp_active.unsqueeze(0).to(
+                probs.device
+            )
+            comp_act = comp_act.sum(dim=-2)  # sum over classes
+
+            pw_a[w] = comp_sil[w][..., 0]
+            pw_b[w] = comp_sil[w][..., 1]
+
         # A current speaker
         w = torch.where(a_current)
         p_b[w] = act_probs[w][..., 1]
         p_a[w] = 1 - act_probs[w][..., 1]
+        if pw:
+            pw_b[w] = comp_act[w][..., 1]
+            pw_a[w] = 1 - comp_act[w][..., 1]
 
         # B current speaker
         w = torch.where(b_current)
         p_a[w] = act_probs[w][..., 0]
         p_b[w] = 1 - act_probs[w][..., 0]
+        if pw:
+            pw_a[w] = comp_act[w][..., 0]
+            pw_b[w] = 1 - comp_act[w][..., 0]
 
         # Both
         w = torch.where(both)
@@ -389,7 +463,28 @@ class ProjectionCodebook(nn.Module):
         sum = act_probs[w][..., 0] + act_probs[w][..., 1]
         p_a[w] = act_probs[w][..., 0] / sum
         p_b[w] = act_probs[w][..., 1] / sum
-        return torch.stack((p_a, p_b), dim=-1)
+
+        pw_probs = None
+        if pw:
+            sum = comp_act[w][..., 0] + comp_act[w][..., 1]
+            pw_a[w] = comp_act[w][..., 0] / sum
+            pw_b[w] = 1 - comp_act[w][..., 1] / sum
+
+            pw_probs = torch.stack((pw_a, pw_b), dim=-1)
+        p_probs = torch.stack((p_a, p_b), dim=-1)
+        return p_probs, pw_probs
+
+    def get_probs(self, logits, vad):
+        probs = logits.softmax(dim=-1)
+        next_probs, next_pw_probs = self.get_next_speaker_probs(
+            probs=probs, vad=vad, pw=True
+        )
+
+        # Prediction
+        ap = probs[..., self.bc_prediction[0]].sum(-1)
+        bp = probs[..., self.bc_prediction[1]].sum(-1)
+        bc_prediction = torch.stack((ap, bp), dim=-1)
+        return {"p": next_probs, "pw": next_pw_probs, "bc_prediction": bc_prediction}
 
     def speaker_prob_to_shift(self, probs, vad):
         """
@@ -475,7 +570,7 @@ if __name__ == "__main__":
     codebook = ProjectionCodebook(bin_times=bin_times)
     labeler = VadLabel(bin_times=bin_times, vad_hz=vad_hz)
     eventer = TurnTakingEvents(
-        bc_idx=codebook.bc_active,
+        bc_idx=codebook.bc_prediction,
         horizon=event_kwargs["event_horizon"],
         min_context=event_kwargs["event_min_context"],
         start_pad=event_kwargs["event_start_pad"],
@@ -487,25 +582,30 @@ if __name__ == "__main__":
         bc_prediction_window=event_kwargs["event_bc_prediction_window"],
         frame_hz=vad_hz,
     )
+    print("bc: ", codebook.bc_prediction.shape)
+    print("shift silent: ", codebook.on_silent_shift.shape)
+    print("shift active: ", codebook.on_active_shift.shape)
+    print("comp silent: ", codebook.comp_silent.shape)
+    print("comp active: ", codebook.comp_active.shape)
 
-    print("bc: ", codebook.bc_active.shape)
-    print("sil shift: ", codebook.on_silent_shift.shape)
-    print("act shift: ", codebook.on_active_shift.shape)
+    shift_silence = codebook.idx_to_onehot(codebook.on_silent_shift[0])
+    _ = plot_all_projection_windows(shift_silence)
 
-    # proj_wins = codebook.idx_to_onehot(codebook.on_silent_shift[0])  # N, 2, n_bins
-    proj_wins = codebook.idx_to_onehot(codebook.on_active_shift[0])  # N, 2, n_bins
-    proj_wins = codebook.idx_to_onehot(codebook.bc_active[0])  # N, 2, n_bins
+    shift_active = codebook.idx_to_onehot(codebook.on_active_shift[0])
+    _ = plot_all_projection_windows(shift_active)
 
-    _ = plot_all_projection_windows(proj_wins)
+    hold_active = codebook.idx_to_onehot(codebook.on_active_hold[0])
+    _ = plot_all_projection_windows(hold_active)
+
+    bc_pred_states = codebook.idx_to_onehot(codebook.bc_prediction[0])
+    _ = plot_all_projection_windows(bc_pred_states)
 
     # Template figures
-
-    # fig, ax = plot_template(projection_type="bc_prediction", prefix_type="silence")
+    # BC-Prediction
+    fig, ax = plot_template(projection_type="bc_prediction", prefix_type="silence")
     # fig, ax = plot_template(projection_type="bc_prediction", prefix_type="active")
+    # Turn-shift / BC-Ongoing
     # fig, ax = plot_template(projection_type="shift", prefix_type="silence")
     # fig, ax = plot_template(projection_type="shift", prefix_type="active")
-    fig, ax = plot_template(projection_type="shift", prefix_type="overlap")
+    # fig, ax = plot_template(projection_type="shift", prefix_type="overlap")
     plt.show()
-    # Turn-shift
-    # BC-Prediction
-    # BC-Ongoing

@@ -495,9 +495,6 @@ class TurnTakingMetrics(Metric):
             self.f1_pw = F1Score(
                 threshold=threshold, num_classes=2, multiclass=True, average="weighted"
             )
-            self.f1_pw_topk = F1Score(
-                threshold=threshold, num_classes=2, multiclass=True, average="weighted"
-            )
 
         # VadProjection Codebook
         self.codebook = ProjectionCodebook(bin_times=bin_times, frame_hz=frame_hz)
@@ -505,7 +502,7 @@ class TurnTakingMetrics(Metric):
 
         # Extract the frames of interest for the given metrics
         self.eventer = TurnTakingEvents(
-            bc_idx=self.codebook.bc_active,
+            bc_idx=self.codebook.bc_prediction,
             horizon=horizon,
             min_context=min_context,
             start_pad=start_pad,
@@ -538,19 +535,23 @@ class TurnTakingMetrics(Metric):
             "f1_weighted": f1["f1_weighted"],
             "f1_pre_weighted": f1_pre,
             "bc_ongoing": bc_ongoing_acc,
-            "shift": f1["shift"],
-            "hold": f1["hold"],
         }
+
+        try:
+            ret["bc_prediction"] = self.bc_pred.compute()
+        except:
+            pass
+
+        ret["shift"] = f1["shift"]
+        ret["hold"] = f1["hold"]
 
         # Extra metrics for discrete model
         if self.discrete:
-            ret["bc_prediction"] = self.bc_pred.compute()
             ret["f1_pw"] = self.f1_pw.compute()
-            ret["f1_pw_topk"] = self.f1_pw.compute()
 
         return ret
 
-    def update_discrete(self, p, pw, pw_top, events):
+    def update_discrete(self, p, pw, events):
         """
         Metrics only defined for the 'discrete-vad-projection' models
         """
@@ -569,13 +570,6 @@ class TurnTakingMetrics(Metric):
             )
             if probs is not None:
                 self.f1_pw.update(probs, labels)
-
-                # Only do it for topk if we had any events
-                if pw_top is not None and pw_top is not None:
-                    ptk, ltk = extract_shift_hold_probs(
-                        pw_top, shift=events["shift"], hold=events["hold"]
-                    )
-                    self.f1_pw_topk.update(ptk, ltk)
 
         # Backchannel Ongoing Decision
         bc_probs, bc_labs = extract_backchannel_probs(p, events["backchannel"])
@@ -606,7 +600,6 @@ class TurnTakingMetrics(Metric):
         p,
         pre_probs=None,
         pw=None,
-        pw_top=None,
         bc_pred_probs=None,
         events=None,
         vad=None,
@@ -624,7 +617,7 @@ class TurnTakingMetrics(Metric):
         if events is None:
             events = self.extract_events(vad)
 
-        # SHFIT/HOLD
+        # SHIFT/HOLD
         self.f1.update(p, hold=events["hold"], shift=events["shift"])
 
         # Backchannel Prediction
@@ -637,7 +630,7 @@ class TurnTakingMetrics(Metric):
 
         # Some metrics differ dependent on model
         if self.discrete:
-            self.update_discrete(p, pw, pw_top, events)
+            self.update_discrete(p, pw, events)
         else:
             self.update_independent(pre_probs, events)
 
