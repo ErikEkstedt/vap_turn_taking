@@ -247,21 +247,21 @@ def plot_events(
 
 
 #########################################################################
-def plot_backchannel_prediction(vad, bc_pred, plot=False):
+def plot_backchannel_prediction(vad, bc_pred, bc_color="r", plot=False):
     n_frames = bc_pred.shape[1]
     if bc_pred.ndim == 3:
         B = bc_pred.shape[0]
-        fig, ax = plt.subplots(B, 1)
+        fig, ax = plt.subplots(B, 1, sharex=True, sharey=True)
         for b in range(B):
             plot_vad_oh(vad[b, :n_frames], ax=ax[b])
-            ax[b].plot(bc_pred[b, :, 0], color="k", linewidth=2)
-            ax[b].plot(-bc_pred[b, :, 1], color="k", linewidth=2)
+            ax[b].plot(bc_pred[b, :, 0], color=bc_color, linewidth=2)
+            ax[b].plot(-bc_pred[b, :, 1], color=bc_color, linewidth=2)
     else:
         assert vad.ndim == 2, "no batch dimension VAD must be (N, 2)"
-        fig, ax = plt.subplots(1, 1)
+        fig, ax = plt.subplots(1, 1, sharex=True, sharey=True)
         plot_vad_oh(vad[:n_frames], ax=ax)
-        ax.plot(bc_pred[:, 0], color="k", linewidth=2)
-        ax.plot(-bc_pred[:, 1], color="k", linewidth=2)
+        ax.plot(bc_pred[:, 0], color=bc_color, linewidth=2)
+        ax.plot(-bc_pred[:, 1], color=bc_color, linewidth=2)
 
     if plot:
         plt.pause(0.01)

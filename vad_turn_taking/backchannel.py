@@ -1,4 +1,5 @@
 import torch
+from vad_turn_taking.vad import VAD
 from vad_turn_taking.utils import find_island_idx_len, find_label_match
 
 
@@ -251,10 +252,17 @@ def backchannel_prediction_events(
     # 1. Match vad with labels `projection_idx` and combine.
     bc_a = find_backchannel_prediction_single(projection_idx, bc_speaker_idx[0])
     bc_b = find_backchannel_prediction_single(projection_idx, bc_speaker_idx[1])
-    bc_pred = torch.stack((bc_a, bc_b), dim=-1)
+
+    # Backchanneler can't be last speaker
+    last_speaker = VAD.get_last_speaker(vad)[..., : projection_idx.shape[1]]
+    a_last = last_speaker == 0
+    b_last = last_speaker == 1
+    bc_a = torch.logical_and(bc_a, b_last) * 1.0
+    bc_b = torch.logical_and(bc_b, a_last) * 1.0
+    bc_cand = torch.stack((bc_a, bc_b), dim=-1)
 
     # 2. Fill prediction events until the actual backchannel starts
-    bc_pred = fill_until_bc_activity(bc_pred, vad, max_fill=20)
+    bc_cand = fill_until_bc_activity(bc_cand, vad, max_fill=100)
 
     # 3. find as-real-as-prossible-backchannels based on isolation
     if isolated is None:
@@ -262,7 +270,7 @@ def backchannel_prediction_events(
 
     # 4. Match the isolated chunks with the isolated backchannel-prediction-candidate segments
     bc_pred = match_bc_pred_with_isolated(
-        bc_pred, isolated, prediction_window=prediction_window
+        bc_cand, isolated, prediction_window=prediction_window
     )
     return bc_pred
 
