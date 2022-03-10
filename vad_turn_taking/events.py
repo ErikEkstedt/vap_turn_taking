@@ -110,6 +110,7 @@ if __name__ == "__main__":
     from conv_ssl.evaluation.utils import load_dm
     from vad_turn_taking.plot_utils import plot_backchannel_prediction
     from vad_turn_taking.vad_projection import ProjectionCodebook, VadLabel
+    import matplotlib.pyplot as plt
 
     # Load Data
     # The only required data is VAD (onehot encoding of voice activity) e.g. (B, N_FRAMES, 2) for two speakers
@@ -155,7 +156,6 @@ if __name__ == "__main__":
 
     # find bc-prediction-negatives
     def find_bc_prediction_negatives(vad, projection_window, ipu_lims):
-
         def get_cand_ipu(s, d):
             longer = d >= ipu_lims[0]
             if longer.sum() == 0:
@@ -223,11 +223,13 @@ if __name__ == "__main__":
                             if e-projection_window > 0:
                                 negs[b, e-projection_window:e, 1] = 1.
 
-                        sdiff = sother - s
-                        if sdiff < 0:  # other before cand
-                            ediff = eother - s
-                            if ediff < 0: # other end before cand
-                        else: # cand before other
+                        # sdiff = sother - s
+                        # if sdiff < 0:  # other before cand
+                        #     ediff = eother - s
+                        #     if ediff < 0: # other end before cand
+                        #         pass
+                        # else: # cand before other
+                        #     pass
 
                             # if ediff
             # for start, dur in zip(s, d):
@@ -245,8 +247,8 @@ if __name__ == "__main__":
     # Batch
     ###################################################
     diter = iter(dm.val_dataloader())
-
     batch = next(diter)
+
     # batch = next(iter(dm.val_dataloader()))
     projection_idx = codebook(VL.vad_projection(batch["vad"]))
     vad = batch["vad"]
@@ -256,20 +258,20 @@ if __name__ == "__main__":
     for k, v in events.items():
         print(f"{k}: {v.shape}")
 
-
     # Plot
     # Find single speaker
-    neg_a = find_bc_prediction_negatives(only_a, projection_window, ipu_lims)
-    neg_b = find_bc_prediction_negatives(only_b, projection_window, ipu_lims)
-    negs = torch.stack((neg_a, neg_b), dim=-1)
+    # negs = find_bc_prediction_negatives(vad, projection_window, ipu_lims)
+    negs = events['backchannel_prediction'][:, 100:]
+    negs = torch.cat((negs, torch.zeros((4, 100, 2))), dim=1)
+    negs[:, :100] = 0
     fig, ax = plot_backchannel_prediction(
-        vad, events["backchannel_prediction"], plot=True
+        vad, events["backchannel_prediction"], bc_color='g', plot=True
     )
     for i, a in enumerate(ax):
         # a.plot(only_a[i]*.5, color='orange', linewidth=2)
         # a.plot(-only_b[i]*.5, color='blue', linewidth=2)
-        a.plot(negs[i, :, 0], color='orange', linewidth=3)
-        a.plot(-negs[i, :, 1], color='blue', linewidth=3)
+        a.plot(negs[i, :, 0], color='r', linewidth=3)
+        a.plot(-negs[i, :, 1], color='r', linewidth=3)
     plt.pause(0.1)
 
 

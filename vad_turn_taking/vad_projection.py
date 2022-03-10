@@ -605,7 +605,7 @@ if __name__ == "__main__":
     fig, ax = plot_template(projection_type="bc_prediction", prefix_type="silence")
     # fig, ax = plot_template(projection_type="bc_prediction", prefix_type="active")
     # Turn-shift / BC-Ongoing
-    # fig, ax = plot_template(projection_type="shift", prefix_type="silence")
-    # fig, ax = plot_template(projection_type="shift", prefix_type="active")
-    # fig, ax = plot_template(projection_type="shift", prefix_type="overlap")
-    plt.show()
+    fig, ax = plot_template(projection_type="shift", prefix_type="silence")
+    fig, ax = plot_template(projection_type="shift", prefix_type="active")
+    fig, ax = plot_template(projection_type="shift", prefix_type="overlap")
+    plt.pause(0.01)
