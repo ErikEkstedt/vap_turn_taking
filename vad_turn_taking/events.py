@@ -3,7 +3,7 @@ import torch
 from vad_turn_taking.utils import find_island_idx_len, time_to_frames
 from vad_turn_taking.backchannel import (
     backchannel_prediction_events,
-    find_isolated_activity_on_other_active,
+    find_backchannel_ongoing,
 )
 from vad_turn_taking.vad import DialogEvents, VAD
 
@@ -21,6 +21,9 @@ class TurnTakingEvents:
         bc_post_silence=3,
         bc_max_active=2,
         bc_prediction_window=1,
+        bc_target_duration=0.3,
+        bc_neg_active=1,
+        bc_neg_prefix=1,
         frame_hz=100,
     ):
         self.pred_threshold = 0.5
@@ -41,6 +44,9 @@ class TurnTakingEvents:
         self.bc_post_silence_frames = time_to_frames(bc_post_silence, frame_hz)
         self.bc_max_active_frames = time_to_frames(bc_max_active, frame_hz)
         self.bc_prediction_window = time_to_frames(bc_prediction_window, frame_hz)
+        self.bc_target_duration = time_to_frames(bc_target_duration, frame_hz)
+        self.bc_neg_active_frames = time_to_frames(bc_neg_active, frame_hz)
+        self.bc_neg_prefix_frames = time_to_frames(bc_neg_prefix, frame_hz)
 
         self.bc_idx = bc_idx
 
@@ -60,8 +66,9 @@ class TurnTakingEvents:
 
     @torch.no_grad()
     def __call__(self, vad, projection_idx):
-        ret = {}
+        n_frames = projection_idx.shape[1]
 
+        ret = {}
         ret["hold"], ret["shift"] = DialogEvents.on_silence(
             vad,
             start_pad=self.frame_start_pad,
@@ -80,12 +87,26 @@ class TurnTakingEvents:
             min_context=self.frame_min_context,
         )
 
-        ret["backchannel"] = find_isolated_activity_on_other_active(
+        bc_ongoing_pos, bc_ongoing_neg = find_backchannel_ongoing(
             vad,
+            n_test_frames=self.bc_target_duration,
             pre_silence_frames=self.bc_pre_silence_frames,
             post_silence_frames=self.bc_post_silence_frames,
             max_active_frames=self.bc_max_active_frames,
+            neg_active_frames=self.bc_neg_active_frames,
+            neg_prefix_frames=self.bc_neg_prefix_frames,
+            min_context_frames=self.frame_min_context,
+            n_frames=n_frames,
         )
+        ret["backchannel"] = bc_ongoing_pos  # can be thought of as SHIFTS
+        ret["backchannel_neg"] = bc_ongoing_neg  # Can be thought of as HOLDS
+
+        # ret["backchannel"] = find_isolated_activity_on_other_active(
+        #     vad,
+        #     pre_silence_frames=self.bc_pre_silence_frames,
+        #     post_silence_frames=self.bc_post_silence_frames,
+        #     max_active_frames=self.bc_max_active_frames,
+        # )
 
         if self.bc_idx.device != projection_idx.device:
             self.bc_idx = self.bc_idx.to(projection_idx.device)
@@ -98,7 +119,6 @@ class TurnTakingEvents:
             isolated=ret["backchannel"],
         )
 
-        n_frames = projection_idx.shape[1]
         for return_name, vector in ret.items():
             ret[return_name] = vector[:, :n_frames]
 
@@ -170,15 +190,13 @@ if __name__ == "__main__":
             d = d[shorter]
             s = s[shorter]
             return s, d
-            
-
 
         ds = VAD.vad_to_dialog_vad_states(vad)
-        only_a = (ds == 0) * 1.
-        only_b = (ds == 3) * 1.
+        only_a = (ds == 0) * 1.0
+        only_b = (ds == 3) * 1.0
 
-        other_a = torch.logical_or(only_b, ds==2) * 1.
-        other_b = torch.logical_or(only_a, ds==2) * 1.
+        other_a = torch.logical_or(only_b, ds == 2) * 1.0
+        other_b = torch.logical_or(only_a, ds == 2) * 1.0
 
         negs = torch.zeros_like(vad)
 
@@ -186,28 +204,26 @@ if __name__ == "__main__":
             break
 
             s1, d1, v1 = find_island_idx_len(only_a[b])
-            s1 = s1[v1==1]
-            d1 = d1[v1==1]
+            s1 = s1[v1 == 1]
+            d1 = d1[v1 == 1]
             e1 = s1 + d1
             s1_cand, d1_cand = get_cand_ipu(s1, d1)
             if s1_cand is not None:
                 so, do, vo = find_island_idx_len(other_a[b])
-                so = so[vo==1]
-                do = do[vo==1]
+                so = so[vo == 1]
+                do = do[vo == 1]
                 eo = so + do
-            
-
 
             s2, d2, v2 = find_island_idx_len(only_b[b])
-            s2 = s2[v2==1]
-            d2 = d2[v2==1]
+            s2 = s2[v2 == 1]
+            d2 = d2[v2 == 1]
             s2_cand, d2_cand = get_cand_ipu(s2, d2)
             e2_cand = s2_cand + d2_cand
 
             if s2_cand is not None:
                 so, do, vo = find_island_idx_len(other_b[b])
-                so = so[vo==1]
-                do = do[vo==1]
+                so = so[vo == 1]
+                do = do[vo == 1]
                 eo = so + do
 
                 cands2 = []
@@ -217,11 +233,13 @@ if __name__ == "__main__":
 
                         if s_cand < sother and e_cand < sother:
                             e_cand = s_cand + d_cand
-                            if e_cand-projection_window > 0:
-                                negs[b, e_cand-projection_window:e_cand, 1] = 1.
-                        elif sother < s_cand and seother<e_cand < sother: # candidate before other
-                            if e-projection_window > 0:
-                                negs[b, e-projection_window:e, 1] = 1.
+                            if e_cand - projection_window > 0:
+                                negs[b, e_cand - projection_window : e_cand, 1] = 1.0
+                        elif (
+                            sother < s_cand and seother < e_cand < sother
+                        ):  # candidate before other
+                            if e - projection_window > 0:
+                                negs[b, e - projection_window : e, 1] = 1.0
 
                         # sdiff = sother - s
                         # if sdiff < 0:  # other before cand
@@ -231,7 +249,7 @@ if __name__ == "__main__":
                         # else: # cand before other
                         #     pass
 
-                            # if ediff
+                        # if ediff
             # for start, dur in zip(s, d):
             #     end = start+dur
             #     start = end - projection_window
@@ -239,8 +257,7 @@ if __name__ == "__main__":
             #         negs[b, start:end] = 1.
         return negs
 
-
-    projection_window=50
+    projection_window = 50
     ipu_lims = [200, 400]
 
     ###################################################
@@ -261,17 +278,15 @@ if __name__ == "__main__":
     # Plot
     # Find single speaker
     # negs = find_bc_prediction_negatives(vad, projection_window, ipu_lims)
-    negs = events['backchannel_prediction'][:, 100:]
+    negs = events["backchannel_prediction"][:, 100:]
     negs = torch.cat((negs, torch.zeros((4, 100, 2))), dim=1)
     negs[:, :100] = 0
     fig, ax = plot_backchannel_prediction(
-        vad, events["backchannel_prediction"], bc_color='g', plot=True
+        vad, events["backchannel_prediction"], bc_color="g", plot=True
     )
     for i, a in enumerate(ax):
         # a.plot(only_a[i]*.5, color='orange', linewidth=2)
         # a.plot(-only_b[i]*.5, color='blue', linewidth=2)
-        a.plot(negs[i, :, 0], color='r', linewidth=3)
-        a.plot(-negs[i, :, 1], color='r', linewidth=3)
+        a.plot(negs[i, :, 0], color="r", linewidth=3)
+        a.plot(-negs[i, :, 1], color="r", linewidth=3)
     plt.pause(0.1)
-
-

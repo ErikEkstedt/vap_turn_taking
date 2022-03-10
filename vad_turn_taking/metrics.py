@@ -486,7 +486,10 @@ class TurnTakingMetrics(Metric):
         self.f1_pre = F1Score(
             threshold=threshold, num_classes=2, multiclass=True, average="weighted"
         )
-        self.bc = Accuracy(threshold=threshold)
+        self.bc_ongoing = F1Score(
+            threshold=threshold, num_classes=2, multiclass=True, average="weighted"
+        )
+        # self.bc = Accuracy(threshold=threshold)
         self.bc_pred = Accuracy(threshold=0.1)
 
         # Only available for discrete model
@@ -529,12 +532,13 @@ class TurnTakingMetrics(Metric):
     def compute(self):
         f1 = self.f1.compute()
         f1_pre = self.f1_pre.compute()
-        bc_ongoing_acc = self.bc.compute()
+        f1_bc_ongoing = self.bc_ongoing.compute()
+        # bc_ongoing_acc = self.bc.compute()
 
         ret = {
             "f1_weighted": f1["f1_weighted"],
             "f1_pre_weighted": f1_pre,
-            "bc_ongoing": bc_ongoing_acc,
+            "f1_bc_ongoing": f1_bc_ongoing,
         }
 
         try:
@@ -555,7 +559,6 @@ class TurnTakingMetrics(Metric):
         """
         Metrics only defined for the 'discrete-vad-projection' models
         """
-
         # Pre-SHIFT/HOLD
         p_pre, label_pre = extract_shift_hold_probs(
             p, shift=events["pre_shift"], hold=events["pre_hold"]
@@ -571,11 +574,6 @@ class TurnTakingMetrics(Metric):
             if probs is not None:
                 self.f1_pw.update(probs, labels)
 
-        # Backchannel Ongoing Decision
-        bc_probs, bc_labs = extract_backchannel_probs(p, events["backchannel"])
-        if bc_probs is not None:
-            self.bc.update(bc_probs, bc_labs)
-
     def update_independent(self, pre_probs, events):
         """
         Metrics are handled slightly differently 'independent-vad-projection' models
@@ -586,13 +584,6 @@ class TurnTakingMetrics(Metric):
         )
         if p_pre is not None:
             self.f1_pre.update(p_pre, label_pre)
-
-        # Backchannel Ongoing Decision
-        bc_probs, bc_labels = extract_backchannel_probs(
-            pre_probs, events["backchannel"]
-        )
-        if bc_probs is not None:
-            self.bc.update(bc_probs, bc_labels)
 
     @torch.no_grad()
     def update(
@@ -620,6 +611,13 @@ class TurnTakingMetrics(Metric):
         # SHIFT/HOLD
         self.f1.update(p, hold=events["hold"], shift=events["shift"])
 
+        # Backchannel
+        bc_probs, bc_labels = extract_backchannel_probs(
+            p, bc_pos=events["backchannel"], bc_neg=events["backchannel_neg"]
+        )
+        if bc_probs is not None:
+            self.bc_ongoing.update(bc_probs, bc_labels)
+
         # Backchannel Prediction
         if bc_pred_probs is not None:
             bc_pred, bc_pred_lab = extract_backchannel_prediction_probs(
@@ -636,12 +634,9 @@ class TurnTakingMetrics(Metric):
 
 
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
     from tqdm import tqdm
-
     from conv_ssl.evaluation.utils import load_dm, load_model
     from conv_ssl.utils import to_device
-    from vad_turn_taking.plot_utils import plot_backchannel_prediction
 
     # Load Data
     # The only required data is VAD (onehot encoding of voice activity) e.g. (B, N_FRAMES, 2) for two speakers
@@ -651,7 +646,8 @@ if __name__ == "__main__":
     ###################################################
     # Load Model
     ###################################################
-    run_path = "how_so/VPModel/djtjou83"  # discrete
+    run_path = "how_so/VPModel/10krujrj"  # independent
+    # run_path = "how_so/VPModel/sbzhz86n"  # discrete
     # run_path = "how_so/VPModel/2608x2g0"  # independent (same bin size)
     model = load_model(run_path=run_path)
     model = model.eval()
@@ -662,16 +658,11 @@ if __name__ == "__main__":
     # tt_metrics = TurnTakingMetricsDiscrete(bin_times=model.conf['vad_projection']['bin_times'])
     tt_metrics = TurnTakingMetrics(discrete=discrete)
     tt_metrics = tt_metrics.to(model.device)
-    tt_old = ShiftHoldMetric()
-    tt_old = tt_old.to(model.device)
     for ii, batch in tqdm(enumerate(diter), total=N):
         batch = to_device(batch, model.device)
         ########################################################################
         # Extract events/labels on full length (with horizon) VAD
         events = tt_metrics.extract_events(batch["vad"])
-        # ev2 = tt_old.extract_events(batch["vad"], n_frames=1000)
-        # for k, v in ev2.items():
-        #     ev2[k] = v[:, :n_frames]
         ########################################################################
         # Forward Pass through the model
         loss, out, batch = model.shared_step(batch)
@@ -681,25 +672,18 @@ if __name__ == "__main__":
         ########################################################################
         # Update metrics
         tt_metrics.update(
-            p=turn_taking_probs["next_probs"],
+            p=turn_taking_probs["p"],
             pw=turn_taking_probs.get("pw", None),
-            pw_top=turn_taking_probs.get("pw_top", None),
             pre_probs=turn_taking_probs.get("pre_probs", None),
             bc_pred_probs=turn_taking_probs.get("bc_pred_probs", None),
             events=events,
         )
-        # tt_old.update(
-        #     p_next=turn_taking_probs["next_probs"],
-        #     vad=batch["vad"],
-        #     events=ev2,
-        #     bc_pre_probs=turn_taking_probs["pre_probs"],
-        # )
         if ii == N:
             break
     result = tt_metrics.compute()
     print("f1_weighted: ", result["f1_weighted"])
     print("f1_pre_weighted: ", result["f1_pre_weighted"])
-    print("bc: ", result["bc_ongoing"])
+    print("f1_bc_ongoing: ", result["f1_bc_ongoing"])
     # print("-" * 30)
     # print("f1_weighted: ", r_old["f1_weighted"])
     # print("f1_pre_weighted: ", r_old["f1_pre_weighted"])

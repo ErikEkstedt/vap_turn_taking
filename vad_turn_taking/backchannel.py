@@ -3,6 +3,38 @@ from vad_turn_taking.vad import VAD
 from vad_turn_taking.utils import find_island_idx_len, find_label_match
 
 
+def find_isolated_within(vad, prefix_frames, max_duration_frames, suffix_frames):
+    """
+    ... <= prefix_frames (silence) | <= max_duration_frames (active) | <= suffix_frames (silence) ...
+    """
+
+    isolated = torch.zeros_like(vad)
+    for b, vad_tmp in enumerate(vad):
+        for speaker in [0, 1]:
+            starts, durs, vals = find_island_idx_len(vad_tmp[..., speaker])
+            for step in range(1, len(starts) - 1):
+                # Activity condition: current step is active
+                if vals[step] == 0:
+                    continue
+
+                # Prefix condition:
+                # check that current active step comes after a certain amount of inactivity
+                if durs[step - 1] < prefix_frames:
+                    continue
+
+                # Suffix condition
+                # check that current active step comes after a certain amount of inactivity
+                if durs[step + 1] < suffix_frames:
+                    continue
+
+                current_dur = durs[step]
+                if current_dur <= max_duration_frames:
+                    start = starts[step]
+                    end = start + current_dur
+                    isolated[b, start:end, speaker] = 1.0
+    return isolated
+
+
 def find_backchannel_prediction_single(projection_idx, target_idx, fill_frames=20):
     """
     Finds segments where the `target_idx` used to define a backchannel prediction
@@ -275,8 +307,309 @@ def backchannel_prediction_events(
     return bc_pred
 
 
+######################################################################
+################# Backchannels #######################################
+######################################################################
+def recover_negatives_single(
+    vad_ongoing,
+    x_ongoing,
+    x_prefix,
+    min_non_bc_activity,
+    min_non_bc_prefix_activity,
+    min_non_bc_consecutive_activity,
+    min_context_frames,
+    total_frames,
+):
+    """
+    x_ongoing
+    x_prefix
+
+    min_non_bc_activity: minimal amount of activity (in frames) in order to count as a NON-backchannel
+    min_non_bc_prefix_activity: minimal amount of activity, of the other speaker, prior to a NON-backchannel
+
+    we want the negatives for backchannels to be the onset of "longer" speech which occurs after a segment, or prefix, where
+    the other speaker has held the turn for some time.
+
+    We checkviable NON-bc candidates by:
+
+    1. "longer" activity for the current speaker (but can be separated by silence).
+    2. "longer" prefix-segments where the other speaker is active, leading into the NON-bc
+    """
+    non_bc_cands = []
+
+    # Find longer duration where the backchanneler or both are active
+    # in other words, where it is not a backchannel but the chosen "backchanneler"
+    # continues for longer. Starts of turns etc
+    so, do, vo = find_island_idx_len(x_ongoing)
+    so = so[vo == 1]
+    do = do[vo == 1]
+    if len(do) > 0:
+        # only longer events from
+        # w = do >= bc_neg_dur_frames
+        w = do >= min_non_bc_activity
+        if w.sum() > 0:
+            do = do[w]
+            so = so[w]
+            for ss in so:
+                # check that the minimal amount of consecutive information is present
+                # during the NON-bc.
+                if ss >= min_context_frames and ss < total_frames:
+                    actual_active = vad_ongoing[
+                        ss : ss + min_non_bc_consecutive_activity
+                    ].sum()
+                    if actual_active == min_non_bc_consecutive_activity:
+                        non_bc_cands.append(ss)
+
+    if len(non_bc_cands) == 0:
+        return None
+
+    # print('NON_bc_cands: ', non_bc_cands)
+    # TODO: Actual activity longer than bc_ongoing length
+
+    # Prefix conditions
+    # Find moments where the other person, not the chosen "backchaneller", is active,
+    # over a certain perdiod, which constitutes good prefix-segments for negative backchannel samples
+    # A backchannel often occurs when the other speaker has ben active for some time.
+    prefix_cands = []
+    # s, d, v = find_island_idx_len(not_this_speaker[b, :, bcer])
+    s, d, v = find_island_idx_len(x_prefix)
+    s = s[v == 1]
+    d = d[v == 1]
+    if len(d) > 0:
+        # w = d >= bc_neg_min_pre_frames
+        w = d >= min_non_bc_prefix_activity
+        if w.sum() > 0:
+            d = d[w]
+            s = s[w]
+            e = s + d
+            prefix_cands += e.tolist()
+
+    if len(prefix_cands) == 0:
+        return None
+
+    # print('Prefix cand: ', prefix_cands)
+
+    bc_negatives = []
+    for bcer in non_bc_cands:
+        if bcer in prefix_cands:
+            bc_negatives.append(bcer)
+
+    if len(bc_negatives) == 0:
+        return None
+
+    return bc_negatives
+
+
+def recover_bc_ongoing_negatives(
+    vad,
+    min_context_frames=100,
+    min_non_bc_activity=200,
+    min_non_bc_prefix_activity=200,
+    min_non_bc_consecutive_activity=50,
+    total_frames=1000,
+):
+    ds = VAD.vad_to_dialog_vad_states(vad)
+    last_speaker = VAD.get_last_speaker(vad, ds=ds)
+    not_a = (last_speaker != 0) * 1.0
+    not_b = (last_speaker != 1) * 1.0
+    not_this_speaker = torch.stack((not_a, not_b), dim=-1)
+
+    N = vad.shape[1]
+    negatives = torch.zeros_like(vad[:, :total_frames])
+    for b in range(vad.shape[0]):
+        a_tmp_bcs = recover_negatives_single(
+            vad_ongoing=vad[b, :, 0],
+            x_ongoing=not_this_speaker[b, :, 1],
+            x_prefix=not_this_speaker[b, :, 0],
+            min_non_bc_activity=min_non_bc_activity,
+            min_non_bc_prefix_activity=min_non_bc_prefix_activity,
+            min_non_bc_consecutive_activity=min_non_bc_consecutive_activity,
+            min_context_frames=min_context_frames,
+            total_frames=total_frames,
+        )
+        if a_tmp_bcs is not None:
+            for start in a_tmp_bcs:
+                end = start + min_non_bc_consecutive_activity
+                if min_context_frames <= start and end < N:
+                    negatives[b, start:end, 0] = 1.0
+        # B is backchanneler
+        b_tmp_bcs = recover_negatives_single(
+            vad_ongoing=vad[b, :, 1],
+            x_ongoing=not_this_speaker[b, :, 0],
+            x_prefix=not_this_speaker[b, :, 1],
+            min_non_bc_activity=min_non_bc_activity,
+            min_non_bc_prefix_activity=min_non_bc_prefix_activity,
+            min_non_bc_consecutive_activity=min_non_bc_consecutive_activity,
+            min_context_frames=min_context_frames,
+            total_frames=total_frames,
+        )
+        if b_tmp_bcs is not None:
+            for start in b_tmp_bcs:
+                end = start + min_non_bc_consecutive_activity
+                if min_context_frames <= start and end < N:
+                    negatives[b, start:end, 1] = 1.0
+
+    # if negatives.sum() == 0:
+    #     return None
+
+    return negatives
+
+
+def isolated_to_bc_ongoing_positives(isolated, bc_test_frames, n_frames=1000):
+    bc_pos = torch.zeros((isolated.shape[0], n_frames, 2), device=isolated.device)
+    for b, bc_tmp in enumerate(isolated):
+        for backchanneler in [0, 1]:
+            s, d, v = find_island_idx_len(bc_tmp[..., backchanneler])
+            s = s[v == 1]
+            d = d[v == 1]
+            # Over certain duration
+            w = d >= bc_test_frames
+            if len(w) > 0:
+                s = s[w]
+                d = d[w]
+                for ss in s:
+                    end = ss + bc_test_frames
+                    if end <= n_frames:
+                        bc_pos[b, ss:end, backchanneler] = 1.0
+    return bc_pos
+
+
+def find_backchannel_ongoing(
+    vad,
+    n_test_frames,
+    pre_silence_frames,
+    post_silence_frames,
+    max_active_frames,
+    neg_active_frames,
+    neg_prefix_frames,
+    min_context_frames=100,
+    n_frames=1000,
+):
+    """
+    Find backchannel (ongoing) positives/negatives
+    """
+    # Speaker independent activity isolation finder
+    # short active segments surrounded by
+    # prefix_frames (silence) | active <= max_duration_frames | Suffix frames (silence)
+    isolated = find_isolated_within(
+        vad,
+        prefix_frames=pre_silence_frames,
+        max_duration_frames=max_active_frames,
+        suffix_frames=post_silence_frames,
+    )
+    # bc must be over 'bc_test_frames' but under 'bc_max_active_frames'
+    # grab only the first 'bc_test_frames' as the actual event
+    bc_pos = isolated_to_bc_ongoing_positives(
+        isolated,
+        bc_test_frames=n_test_frames,
+        n_frames=n_frames,
+    )
+
+    bc_neg = recover_bc_ongoing_negatives(
+        vad,
+        min_context_frames=min_context_frames,
+        min_non_bc_activity=neg_active_frames,
+        min_non_bc_prefix_activity=neg_prefix_frames,  # quiet time pre NON-bc (for backchanneler)
+        min_non_bc_consecutive_activity=n_test_frames,  # amount of frames where speech must be included (test area)
+    )
+
+    # Remove possible positive matches from the negative samples
+    w = torch.where(bc_pos)
+    if len(w[0]) > 0:
+        bc_neg[w] = torch.zeros_like(w[0], dtype=torch.float)
+    return bc_pos, bc_neg
+
+
+######################################################################
+################# Backchannels Prediction ############################
+######################################################################
+
+# find bc-prediction-negatives
+def find_bc_prediction_negatives(vad, projection_window, ipu_lims):
+    def get_cand_ipu(s, d):
+        longer = d >= ipu_lims[0]
+        if longer.sum() == 0:
+            return None, None
+
+        d = d[longer]
+        s = s[longer]
+        shorter = d <= ipu_lims[1]
+        if shorter.sum() == 0:
+            return None, None
+
+        d = d[shorter]
+        s = s[shorter]
+        return s, d
+
+    ds = VAD.vad_to_dialog_vad_states(vad)
+    only_a = (ds == 0) * 1.0
+    only_b = (ds == 3) * 1.0
+
+    other_a = torch.logical_or(only_b, ds == 2) * 1.0
+    other_b = torch.logical_or(only_a, ds == 2) * 1.0
+
+    negs = torch.zeros_like(vad)
+
+    for b in range(vad.shape[0]):
+        break
+
+        s1, d1, v1 = find_island_idx_len(only_a[b])
+        s1 = s1[v1 == 1]
+        d1 = d1[v1 == 1]
+        e1 = s1 + d1
+        s1_cand, d1_cand = get_cand_ipu(s1, d1)
+        if s1_cand is not None:
+            so, do, vo = find_island_idx_len(other_a[b])
+            so = so[vo == 1]
+            do = do[vo == 1]
+            eo = so + do
+
+        s2, d2, v2 = find_island_idx_len(only_b[b])
+        s2 = s2[v2 == 1]
+        d2 = d2[v2 == 1]
+        s2_cand, d2_cand = get_cand_ipu(s2, d2)
+        e2_cand = s2_cand + d2_cand
+
+        if s2_cand is not None:
+            so, do, vo = find_island_idx_len(other_b[b])
+            so = so[vo == 1]
+            do = do[vo == 1]
+            eo = so + do
+
+            cands2 = []
+            for s_cand, d_cand in zip(s2_cand, d2_cand):
+
+                for sother, eother in zip(so, eo):
+
+                    if s_cand < sother and e_cand < sother:
+                        e_cand = s_cand + d_cand
+                        if e_cand - projection_window > 0:
+                            negs[b, e_cand - projection_window : e_cand, 1] = 1.0
+                    elif (
+                        sother < s_cand and seother < e_cand < sother
+                    ):  # candidate before other
+                        if e - projection_window > 0:
+                            negs[b, e - projection_window : e, 1] = 1.0
+
+                    # sdiff = sother - s
+                    # if sdiff < 0:  # other before cand
+                    #     ediff = eother - s
+                    #     if ediff < 0: # other end before cand
+                    #         pass
+                    # else: # cand before other
+                    #     pass
+
+                    # if ediff
+        # for start, dur in zip(s, d):
+        #     end = start+dur
+        #     start = end - projection_window
+        #     if start > 0:
+        #         negs[b, start:end] = 1.
+    return negs
+
+
 @torch.no_grad()
-def extract_backchannel_probs(p, backchannel_event):
+def extract_backchannel_probs_old(p, backchannel_event):
     """
     Extracts the probabilities associated with the relevant segments, given by `backchannel_event`, whether the 'short'
     activation of a speaker is a 'backchannel' or if it's the start of a longer segment.
@@ -311,6 +644,56 @@ def extract_backchannel_probs(p, backchannel_event):
     if len(probs) > 0:
         probs = torch.cat(probs)
         labels = torch.ones_like(probs, dtype=torch.long)
+    else:
+        probs = None
+        labels = None
+    return probs, labels
+
+
+@torch.no_grad()
+def extract_backchannel_probs(p, bc_pos, bc_neg):
+    """ """
+
+    # pos_probs = []
+    # neg_probs = []
+    # pos_labels = []
+    # neg_labels = []
+
+    probs = []
+    labels = []
+    for bc_speaker in [0, 1]:
+        wp = torch.where(bc_pos[..., bc_speaker])
+        if len(wp[0]) > 0:
+            # we know that 'bc_speaker' have a short backchannel
+            # and so the given activity should  be close to zero.
+            # we reverse this to get a 'regular' accuracy where probabilities
+            # closer to one is considered correct
+
+            # Onset of backchaneller results in a backchannel so we should guess
+            # Next speaker != backchanneler
+            pp = 1 - p[wp][..., bc_speaker]
+            # pos_probs.append(pp)
+            # pos_labels.append(torch.ones_like(pp))
+            probs.append(pp)
+            labels.append(torch.ones_like(pp, dtype=torch.long))
+
+        wn = torch.where(bc_neg[..., bc_speaker])
+        if len(wn[0]) > 0:
+            # Onset of backchaneller is now something longer than a backchannel
+            # i.e. a negative backchannel
+            # here the model should guess
+            # Next speaker == backchanneler
+            # which means one minus probability(backchanneler is next speaker) -> 0
+            pn = 1 - p[wn][..., bc_speaker]
+            # neg_probs.append(pn)
+            # neg_labels.append(torch.zeros_like(pn))
+            probs.append(pn)
+            labels.append(torch.zeros_like(pn, dtype=torch.long))
+
+    # return None if no event existed
+    if len(probs) > 0:
+        probs = torch.cat(probs)
+        labels = torch.cat(labels)
     else:
         probs = None
         labels = None
@@ -401,180 +784,109 @@ def bc():
 
 if __name__ == "__main__":
 
+    from tqdm import tqdm
     from conv_ssl.evaluation.utils import load_dm
     from vad_turn_taking.plot_utils import plot_backchannel_prediction
     from vad_turn_taking.vad_projection import ProjectionCodebook, VadLabel
-    from vad_turn_taking.events import TurnTakingEvents
     import matplotlib.pyplot as plt
+
+    bin_times = [0.2, 0.4, 0.6, 0.8]
+    vad_hz = 100
+    # Codebook to extract specific class labels from onehot-representation
+    codebook = ProjectionCodebook(bin_times=bin_times, frame_hz=vad_hz)
+    VL = VadLabel(bin_times=bin_times, vad_hz=vad_hz)
 
     # Load Data
     # The only required data is VAD (onehot encoding of voice activity) e.g. (B, N_FRAMES, 2) for two speakers
     dm = load_dm()
-    # diter = iter(dm.val_dataloader())
-
-    ####################################################################
-    # Class to extract VAD-PROJECTION-WINDOWS from VAD
-    bin_times = [0.2, 0.4, 0.6, 0.8]
-    vad_hz = 100
-    VL = VadLabel(bin_times=bin_times, vad_hz=vad_hz)
-    # Codebook to extract specific class labels from onehot-representation
-    codebook = ProjectionCodebook(bin_times=bin_times, frame_hz=vad_hz)
 
     ###################################################
-    # Event extractor
+    # Backchannels
     ###################################################
-    metric_kwargs = {
-        "event_pre": 0.5,
-        "event_min_context": 1.0,
-        "event_min_duration": 0.15,
-        "event_horizon": 1.0,
-        "event_start_pad": 0.05,
-        "event_target_duration": 0.10,
-        "event_bc_pre_silence": 1,
-        "event_bc_post_silence": 2,
-        "event_bc_max_active": 1,
-        "event_bc_prediction_window": 0.5,
-    }
-    eventer = TurnTakingEvents(
-        bc_idx=codebook.bc_prediction,
-        horizon=metric_kwargs["event_horizon"],
-        min_context=metric_kwargs["event_min_context"],
-        start_pad=metric_kwargs["event_start_pad"],
-        target_duration=metric_kwargs["event_target_duration"],
-        pre_active=metric_kwargs["event_pre"],
-        bc_pre_silence=metric_kwargs["event_bc_pre_silence"],
-        bc_post_silence=metric_kwargs["event_bc_post_silence"],
-        bc_max_active=metric_kwargs["event_bc_max_active"],
-        bc_prediction_window=metric_kwargs["event_bc_prediction_window"],
-        frame_hz=vad_hz,
-    )
 
-    # find bc-prediction-negatives
-    def find_bc_prediction_negatives(vad, projection_window, ipu_lims):
-        def get_cand_ipu(s, d):
-            longer = d >= ipu_lims[0]
-            if longer.sum() == 0:
-                return None, None
-
-            d = d[longer]
-            s = s[longer]
-            shorter = d <= ipu_lims[1]
-            if shorter.sum() == 0:
-                return None, None
-
-            d = d[shorter]
-            s = s[shorter]
-            return s, d
-            
-
-
-        ds = VAD.vad_to_dialog_vad_states(vad)
-        only_a = (ds == 0) * 1.
-        only_b = (ds == 3) * 1.
-
-        other_a = torch.logical_or(only_b, ds==2) * 1.
-        other_b = torch.logical_or(only_a, ds==2) * 1.
-
-        negs = torch.zeros_like(vad)
-
-        for b in range(vad.shape[0]):
-            break
-
-            s1, d1, v1 = find_island_idx_len(only_a[b])
-            s1 = s1[v1==1]
-            d1 = d1[v1==1]
-            e1 = s1 + d1
-            s1_cand, d1_cand = get_cand_ipu(s1, d1)
-            if s1_cand is not None:
-                so, do, vo = find_island_idx_len(other_a[b])
-                so = so[vo==1]
-                do = do[vo==1]
-                eo = so + do
-            
-
-
-            s2, d2, v2 = find_island_idx_len(only_b[b])
-            s2 = s2[v2==1]
-            d2 = d2[v2==1]
-            s2_cand, d2_cand = get_cand_ipu(s2, d2)
-            e2_cand = s2_cand + d2_cand
-
-            if s2_cand is not None:
-                so, do, vo = find_island_idx_len(other_b[b])
-                so = so[vo==1]
-                do = do[vo==1]
-                eo = so + do
-
-                cands2 = []
-                for s_cand, d_cand in zip(s2_cand, d2_cand):
-
-                    for sother, eother in zip(so, eo):
-
-                        if s_cand < sother and e_cand < sother:
-                            e_cand = s_cand + d_cand
-                            if e_cand-projection_window > 0:
-                                negs[b, e_cand-projection_window:e_cand, 1] = 1.
-                        elif sother < s_cand and seother<e_cand < sother: # candidate before other
-                            if e-projection_window > 0:
-                                negs[b, e-projection_window:e, 1] = 1.
-
-                        # sdiff = sother - s
-                        # if sdiff < 0:  # other before cand
-                        #     ediff = eother - s
-                        #     if ediff < 0: # other end before cand
-                        #         pass
-                        # else: # cand before other
-                        #     pass
-
-                            # if ediff
-            # for start, dur in zip(s, d):
-            #     end = start+dur
-            #     start = end - projection_window
-            #     if start > 0:
-            #         negs[b, start:end] = 1.
-        return negs
-
-
-    projection_window=50
-    ipu_lims = [200, 400]
+    # def find_bc_ongoing_negatives(vad, bc_ongoing):
+    # find start of longer utterance
 
     ###################################################
-    # Batch
+    # Batches
     ###################################################
     diter = iter(dm.val_dataloader())
 
     batch = next(diter)
+    bc_dict = {
+        "min_context_frames": 100,  # general model minimal context
+        "bc_pre_silence_frames": 100,
+        "bc_post_silence_frames": 200,
+        "bc_max_active_frames": 80,  # longer than this is not a positive bc
+        "bc_test_frames": 20,  # amount of frames at start to investigate performance
+        "neg_bc_active_frames": 100,  # actvity, including pauses, for NON-bc
+        "neg_bc_prefix_frames": 100,  # actvity, including pauses, for NON-bc
+    }
     # batch = next(iter(dm.val_dataloader()))
     projection_idx = codebook(VL.vad_projection(batch["vad"]))
     vad = batch["vad"]
-    print("projection_idx: ", tuple(projection_idx.shape))
-    print("vad: ", tuple(vad.shape))
-    events = eventer(vad, projection_idx)
-    for k, v in events.items():
-        print(f"{k}: {v.shape}")
-    fig, ax = plot_backchannel_prediction(
-        vad, events["backchannel"], bc_color='purple', plot=True
+    isolated = find_isolated_within(
+        vad,
+        prefix_frames=bc_dict["bc_pre_silence_frames"],
+        max_duration_frames=bc_dict["bc_max_active_frames"],
+        suffix_frames=bc_dict["bc_post_silence_frames"],
     )
-    fig, ax = plot_backchannel_prediction(
-        vad, events["backchannel_prediction"], bc_color='g', plot=True
+    bc_pos, bc_neg = find_backchannel_ongoing(
+        vad,
+        n_test_frames=bc_dict["bc_test_frames"],
+        pre_silence_frames=bc_dict["bc_pre_silence_frames"],
+        post_silence_frames=bc_dict["bc_post_silence_frames"],
+        max_active_frames=bc_dict["bc_max_active_frames"],
+        neg_active_frames=bc_dict["neg_bc_active_frames"],
+        neg_prefix_frames=bc_dict["neg_bc_prefix_frames"],
+        min_context_frames=bc_dict["min_context_frames"],
+        n_frames=1000,
     )
+    p = torch.rand_like(vad[:, :1000])
+    bc_probs, bc_labels = extract_backchannel_probs(p, bc_pos, bc_neg)
+    if bc_probs is not None:
+        print(bc_labels)
 
-
-    # Plot
-    # Find single speaker
-    # negs = find_bc_prediction_negatives(vad, projection_window, ipu_lims)
-    negs = events['backchannel_prediction'][:, 100:]
-    negs = torch.cat((negs, torch.zeros((4, 100, 2))), dim=1)
-    negs[:, :100] = 0
+    # for k, v in events.items():
+    #     print(f"{k}: {v.shape}")
     fig, ax = plot_backchannel_prediction(
-        vad, events["backchannel_prediction"], bc_color='g', plot=True
+        vad, bc_pos, bc_color="g", linewidth=3, plot=False
     )
     for i, a in enumerate(ax):
-        # a.plot(only_a[i]*.5, color='orange', linewidth=2)
-        # a.plot(-only_b[i]*.5, color='blue', linewidth=2)
-        a.plot(negs[i, :, 0], color='r', linewidth=3)
-        a.plot(-negs[i, :, 1], color='r', linewidth=3)
-    plt.pause(0.1)
+        a.plot(bc_neg[i, :, 0], color="r", linewidth=3)
+        a.plot(-bc_neg[i, :, 1], color="r", linewidth=3)
+        a.plot(isolated[i, :, 0], color="k", linewidth=1, linestyle="dashed")
+        a.plot(-isolated[i, :, 1], color="k", linewidth=1, linestyle="dashed")
+    plt.pause(0.01)
+
+    ###########################################################
+    ## Over entire dataset
+    ###########################################################
+    max_batches = -1
+    dloader = dm.val_dataloader()
+    if max_batches > 0:
+        pbar = tqdm(dloader, total=max_batches)
+    else:
+        pbar = tqdm(dloader)
+    n_pos, n_neg = 0, 0
+    for i, batch in enumerate(pbar):
+        bc_pos, bc_neg = find_backchannel_ongoing(
+            batch["vad"],
+            n_test_frames=bc_dict["bc_test_frames"],
+            pre_silence_frames=bc_dict["bc_pre_silence_frames"],
+            post_silence_frames=bc_dict["bc_post_silence_frames"],
+            max_active_frames=bc_dict["bc_max_active_frames"],
+            neg_active_frames=bc_dict["neg_bc_active_frames"],
+            neg_prefix_frames=bc_dict["neg_bc_prefix_frames"],
+            min_context_frames=bc_dict["min_context_frames"],
+            n_frames=1000,
+        )
+        np = bc_pos.sum().item()
+        nn = bc_neg.sum().item()
+        n_pos += np
+        n_neg += nn
+        if i == max_batches:
+            break
 
     ##################################################################
     # Extract bc-prediciton-segments and analyze distribution
@@ -586,16 +898,14 @@ if __name__ == "__main__":
         for i, bc_sample in enumerate(bc_oh):
             # find all segments
             s, d, v = find_island_idx_len(bc_sample)
-            s = s[v==1]
-            d = d[v==1]
+            s = s[v == 1]
+            d = d[v == 1]
             e = s + d
 
             # extract and store
             for start, end in zip(s, e):
                 segments.append(vad[i, start:end])
         return segments
-
-
 
     from tqdm import tqdm
 
@@ -605,16 +915,15 @@ if __name__ == "__main__":
         projection_idx = codebook(VL.vad_projection(batch["vad"]))
         vad = batch["vad"]
         events = eventer(vad, projection_idx)
-        s = extract_bc_prediction_segments(vad, events['backchannel_prediction'])
+        s = extract_bc_prediction_segments(vad, events["backchannel_prediction"])
         segments.append(s)
 
-        bc_oh = events['backchannel_prediction'].sum(dim=-1).long()
+        bc_oh = events["backchannel_prediction"].sum(dim=-1).long()
 
-        vad = vad[:, :projection_idx.shape[1]]
+        vad = vad[:, : projection_idx.shape[1]]
 
         v = vad[torch.where(bc_oh)]
         print(v.shape)
-
 
     tensor_segments = []
     for s in segments:
@@ -627,9 +936,18 @@ if __name__ == "__main__":
     m = tensor_segments[:, :-1].mean(dim=0)
 
     fig, ax = plt.subplots(1, 1)
-    ax.plot(m[:, 0], color='blue')
-    ax.plot(m[:, 1], color='orange')
+    ax.plot(m[:, 0], color="blue")
+    ax.plot(m[:, 1], color="orange")
     ax.set_ylim([0, 1])
     plt.pause(0.1)
 
+    ###########################################
+    x = torch.randn((4, 100, 32))  # (B, n_samples)
+    x = x.requires_grad_(True)
+    print(x.grad)  # None
+    y = model(x)  # (B, N_frames, D)
+    # l = y[:, :50].sum()  # gradient only step 50
+    l = y[2].sum()  # gradient only step 50
+    l.backward()
 
+    g = x.grad.data.abs() * 1000
