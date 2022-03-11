@@ -4,6 +4,7 @@ from vad_turn_taking.utils import find_island_idx_len, time_to_frames
 from vad_turn_taking.backchannel import (
     backchannel_prediction_events,
     find_backchannel_ongoing,
+    recover_bc_prediction_negatives,
 )
 from vad_turn_taking.vad import DialogEvents, VAD
 
@@ -118,6 +119,9 @@ class TurnTakingEvents:
             prediction_window=self.bc_prediction_window,
             isolated=ret["backchannel"],
         )
+        ret["backchannel_prediction_neg"] = recover_bc_prediction_negatives(
+            bc_ongoing_neg, neg_bc_prediction_window=self.bc_prediction_window
+        )
 
         for return_name, vector in ret.items():
             ret[return_name] = vector[:, :n_frames]
@@ -130,6 +134,7 @@ if __name__ == "__main__":
     from conv_ssl.evaluation.utils import load_dm
     from vad_turn_taking.plot_utils import plot_backchannel_prediction
     from vad_turn_taking.vad_projection import ProjectionCodebook, VadLabel
+    from vad_turn_taking.backchannel import find_isolated_within
     import matplotlib.pyplot as plt
 
     # Load Data
@@ -155,10 +160,13 @@ if __name__ == "__main__":
         "event_horizon": 1.0,
         "event_start_pad": 0.05,
         "event_target_duration": 0.10,
+        "event_bc_target_duration": 0.25,
         "event_bc_pre_silence": 1,
-        "event_bc_post_silence": 2,
-        "event_bc_max_active": 1,
-        "event_bc_prediction_window": 0.5,
+        "event_bc_post_silence": 1,
+        "event_bc_max_active": 1.0,
+        "event_bc_prediction_window": 0.4,
+        "event_bc_neg_active": 1,
+        "event_bc_neg_prefix": 1,
     }
     eventer = TurnTakingEvents(
         bc_idx=codebook.bc_prediction,
@@ -167,126 +175,66 @@ if __name__ == "__main__":
         start_pad=metric_kwargs["event_start_pad"],
         target_duration=metric_kwargs["event_target_duration"],
         pre_active=metric_kwargs["event_pre"],
+        bc_target_duration=metric_kwargs["event_bc_target_duration"],
         bc_pre_silence=metric_kwargs["event_bc_pre_silence"],
         bc_post_silence=metric_kwargs["event_bc_post_silence"],
         bc_max_active=metric_kwargs["event_bc_max_active"],
         bc_prediction_window=metric_kwargs["event_bc_prediction_window"],
+        bc_neg_active=metric_kwargs["event_bc_neg_active"],
+        bc_neg_prefix=metric_kwargs["event_bc_neg_prefix"],
         frame_hz=vad_hz,
     )
-
-    # find bc-prediction-negatives
-    def find_bc_prediction_negatives(vad, projection_window, ipu_lims):
-        def get_cand_ipu(s, d):
-            longer = d >= ipu_lims[0]
-            if longer.sum() == 0:
-                return None, None
-
-            d = d[longer]
-            s = s[longer]
-            shorter = d <= ipu_lims[1]
-            if shorter.sum() == 0:
-                return None, None
-
-            d = d[shorter]
-            s = s[shorter]
-            return s, d
-
-        ds = VAD.vad_to_dialog_vad_states(vad)
-        only_a = (ds == 0) * 1.0
-        only_b = (ds == 3) * 1.0
-
-        other_a = torch.logical_or(only_b, ds == 2) * 1.0
-        other_b = torch.logical_or(only_a, ds == 2) * 1.0
-
-        negs = torch.zeros_like(vad)
-
-        for b in range(vad.shape[0]):
-            break
-
-            s1, d1, v1 = find_island_idx_len(only_a[b])
-            s1 = s1[v1 == 1]
-            d1 = d1[v1 == 1]
-            e1 = s1 + d1
-            s1_cand, d1_cand = get_cand_ipu(s1, d1)
-            if s1_cand is not None:
-                so, do, vo = find_island_idx_len(other_a[b])
-                so = so[vo == 1]
-                do = do[vo == 1]
-                eo = so + do
-
-            s2, d2, v2 = find_island_idx_len(only_b[b])
-            s2 = s2[v2 == 1]
-            d2 = d2[v2 == 1]
-            s2_cand, d2_cand = get_cand_ipu(s2, d2)
-            e2_cand = s2_cand + d2_cand
-
-            if s2_cand is not None:
-                so, do, vo = find_island_idx_len(other_b[b])
-                so = so[vo == 1]
-                do = do[vo == 1]
-                eo = so + do
-
-                cands2 = []
-                for s_cand, d_cand in zip(s2_cand, d2_cand):
-
-                    for sother, eother in zip(so, eo):
-
-                        if s_cand < sother and e_cand < sother:
-                            e_cand = s_cand + d_cand
-                            if e_cand - projection_window > 0:
-                                negs[b, e_cand - projection_window : e_cand, 1] = 1.0
-                        elif (
-                            sother < s_cand and seother < e_cand < sother
-                        ):  # candidate before other
-                            if e - projection_window > 0:
-                                negs[b, e - projection_window : e, 1] = 1.0
-
-                        # sdiff = sother - s
-                        # if sdiff < 0:  # other before cand
-                        #     ediff = eother - s
-                        #     if ediff < 0: # other end before cand
-                        #         pass
-                        # else: # cand before other
-                        #     pass
-
-                        # if ediff
-            # for start, dur in zip(s, d):
-            #     end = start+dur
-            #     start = end - projection_window
-            #     if start > 0:
-            #         negs[b, start:end] = 1.
-        return negs
-
-    projection_window = 50
-    ipu_lims = [200, 400]
 
     ###################################################
     # Batch
     ###################################################
     diter = iter(dm.val_dataloader())
-    batch = next(diter)
 
-    # batch = next(iter(dm.val_dataloader()))
+    # for batch in diter:
+    batch = next(diter)
     projection_idx = codebook(VL.vad_projection(batch["vad"]))
     vad = batch["vad"]
-    print("projection_idx: ", tuple(projection_idx.shape))
-    print("vad: ", tuple(vad.shape))
+    isolated = find_isolated_within(
+        vad,
+        prefix_frames=eventer.bc_pre_silence_frames,
+        max_duration_frames=eventer.bc_max_active_frames,
+        suffix_frames=eventer.bc_post_silence_frames,
+    )
     events = eventer(vad, projection_idx)
-    for k, v in events.items():
-        print(f"{k}: {v.shape}")
-
+    # for k, v in events.items():
+    #     print(f"{k}: {v.shape}")
     # Plot
-    # Find single speaker
-    # negs = find_bc_prediction_negatives(vad, projection_window, ipu_lims)
-    negs = events["backchannel_prediction"][:, 100:]
-    negs = torch.cat((negs, torch.zeros((4, 100, 2))), dim=1)
-    negs[:, :100] = 0
     fig, ax = plot_backchannel_prediction(
-        vad, events["backchannel_prediction"], bc_color="g", plot=True
+        vad, events["backchannel"], bc_color="g", plot=False
     )
     for i, a in enumerate(ax):
-        # a.plot(only_a[i]*.5, color='orange', linewidth=2)
-        # a.plot(-only_b[i]*.5, color='blue', linewidth=2)
-        a.plot(negs[i, :, 0], color="r", linewidth=3)
-        a.plot(-negs[i, :, 1], color="r", linewidth=3)
+        a.plot(events["backchannel_neg"][i, :, 0], color="r", linewidth=3)
+        a.plot(-events["backchannel_neg"][i, :, 1], color="r", linewidth=3)
+        a.plot(
+            events["backchannel_prediction"][i, :, 0],
+            color="g",
+            linewidth=3,
+            linestyle="dashed",
+        )
+        a.plot(
+            -events["backchannel_prediction"][i, :, 1],
+            color="g",
+            linewidth=3,
+            linestyle="dashed",
+        )
+        a.plot(
+            events["backchannel_prediction_neg"][i, :, 0],
+            color="r",
+            linewidth=3,
+            linestyle="dashed",
+        )
+        a.plot(
+            -events["backchannel_prediction_neg"][i, :, 1],
+            color="r",
+            linewidth=3,
+            linestyle="dashed",
+        )
+        a.plot(isolated[i, :, 0], color="k", linewidth=1)
+        a.plot(-isolated[i, :, 1], color="k", linewidth=1)
+    # plt.show()
     plt.pause(0.1)

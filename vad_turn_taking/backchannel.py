@@ -237,6 +237,9 @@ def match_bc_pred_with_isolated(bc_pred, isolated, prediction_window=100):
 
     If `prediction_window` <= 0, then we use the actual segment from the `bc_pred`.
     """
+    assert (
+        prediction_window > 0
+    ), f"Prediction window must be a positive integer != {prediction_window}"
     valid_bc_pred = torch.zeros_like(bc_pred)
     for n_batch in range(bc_pred.shape[0]):
         for n_speaker in [0, 1]:
@@ -261,13 +264,10 @@ def match_bc_pred_with_isolated(bc_pred, isolated, prediction_window=100):
                 w_end_idx = torch.where(bc_ends == iso_start)[0]
                 if len(w_end_idx) > 0:
                     end = bc_ends[w_end_idx]
-                    if prediction_window > 0:
-                        start = end - prediction_window
-                        if start < 0:
-                            start = 0
-                    else:
-                        start = bc_starts[w]
-                    valid_bc_pred[n_batch, start : end + 1, n_speaker] = 1.0
+                    start = end - prediction_window
+                    if start < 0:
+                        start = 0
+                    valid_bc_pred[n_batch, start:end, n_speaker] = 1.0
     return valid_bc_pred
 
 
@@ -310,7 +310,7 @@ def backchannel_prediction_events(
 ######################################################################
 ################# Backchannels #######################################
 ######################################################################
-def recover_negatives_single(
+def recover_bc_ongoing_negatives_single(
     vad_ongoing,
     x_ongoing,
     x_prefix,
@@ -417,7 +417,7 @@ def recover_bc_ongoing_negatives(
     N = vad.shape[1]
     negatives = torch.zeros_like(vad[:, :total_frames])
     for b in range(vad.shape[0]):
-        a_tmp_bcs = recover_negatives_single(
+        a_tmp_bcs = recover_bc_ongoing_negatives_single(
             vad_ongoing=vad[b, :, 0],
             x_ongoing=not_this_speaker[b, :, 1],
             x_prefix=not_this_speaker[b, :, 0],
@@ -433,7 +433,7 @@ def recover_bc_ongoing_negatives(
                 if min_context_frames <= start and end < N:
                     negatives[b, start:end, 0] = 1.0
         # B is backchanneler
-        b_tmp_bcs = recover_negatives_single(
+        b_tmp_bcs = recover_bc_ongoing_negatives_single(
             vad_ongoing=vad[b, :, 1],
             x_ongoing=not_this_speaker[b, :, 0],
             x_prefix=not_this_speaker[b, :, 1],
@@ -524,7 +524,25 @@ def find_backchannel_ongoing(
 ################# Backchannels Prediction ############################
 ######################################################################
 
-# find bc-prediction-negatives
+
+def recover_bc_prediction_negatives(bc_neg, neg_bc_prediction_window):
+    """
+    Uses the bc-ongoing negatives as reference and selects a segment of length
+    neg_bc_prediction_window frames prior to the negative event.
+    """
+    bc_pred_neg = torch.zeros_like(bc_neg)
+    for b, tmp_neg in enumerate(bc_neg):
+        for backchanneler in [0, 1]:
+            starts, _, v = find_island_idx_len(tmp_neg[..., backchanneler])
+            starts = starts[v == 1]
+            if len(starts) > 0:
+                for s in starts:
+                    ps = s - neg_bc_prediction_window
+                    if ps > 0:
+                        bc_pred_neg[b, ps:s, backchanneler] = 1.0
+    return bc_pred_neg
+
+
 def find_bc_prediction_negatives(vad, projection_window, ipu_lims):
     def get_cand_ipu(s, d):
         longer = d >= ipu_lims[0]
@@ -701,30 +719,26 @@ def extract_backchannel_probs(p, bc_pos, bc_neg):
 
 
 @torch.no_grad()
-def extract_backchannel_prediction_probs(p, backchannel_event):
-    """
-    p:                  torch.Tensor (B, N, 2), with probabilties associated with a bc prediction from speaker 0/1 respectively
-    backchannel_event : torch.Tensor (B, N, 2), one-hot encoding with segments where a backchannel prediction is valid.
-
-
-    extracts the probability given by the model on defined segments `backchannel_events` were a future bc is valid.
-
-    Speaker A=0:
-        p [:, :, 0] -> prob of A bc prediction where, bc_event[:, :, 0] == 1
-    Speaker B=1:
-        p [:, :, 1] -> prob of A bc prediction where, bc_event[:, :, 1] == 1
-    """
-
+def extract_backchannel_prediction_probs(p, bc_pred_pos, bc_pred_neg):
     probs = []
+    labels = []
     for next_speaker in [0, 1]:
-        w = torch.where(backchannel_event[..., next_speaker])
-        if len(w[0]) > 0:
-            probs.append(p[w][..., next_speaker])
+        wp = torch.where(bc_pred_pos[..., next_speaker])
+        if len(wp[0]) > 0:
+            pp = p[wp][..., next_speaker]
+            probs.append(pp)
+            labels.append(torch.ones_like(pp, dtype=torch.long))
+
+        wn = torch.where(bc_pred_neg[..., next_speaker])
+        if len(wn[0]) > 0:
+            pn = p[wn][..., next_speaker]
+            probs.append(pn)
+            labels.append(torch.zeros_like(pn, dtype=torch.long))
 
     # return None if no event existed
     if len(probs) > 0:
         probs = torch.cat(probs)
-        labels = torch.ones_like(probs, dtype=torch.long)
+        labels = torch.cat(labels)
     else:
         probs = None
         labels = None
@@ -801,54 +815,60 @@ if __name__ == "__main__":
     dm = load_dm()
 
     ###################################################
-    # Backchannels
-    ###################################################
-
-    # def find_bc_ongoing_negatives(vad, bc_ongoing):
-    # find start of longer utterance
-
-    ###################################################
     # Batches
     ###################################################
     diter = iter(dm.val_dataloader())
+    min_context_frames = 100  # general model minimal context
+    bc_pre_silence_frames = 100
+    bc_post_silence_frames = 200
+    bc_max_active_frames = 80  # longer than this is not a positive bc
+    bc_test_frames = 20  # amount of frames at start to investigate performance
+    neg_bc_active_frames = 100  # actvity including pauses for NON-bc
+    neg_bc_prefix_frames = 100  # actvity including pauses for NON-bc
+    neg_bc_prediction_window = 50
 
     batch = next(diter)
-    bc_dict = {
-        "min_context_frames": 100,  # general model minimal context
-        "bc_pre_silence_frames": 100,
-        "bc_post_silence_frames": 200,
-        "bc_max_active_frames": 80,  # longer than this is not a positive bc
-        "bc_test_frames": 20,  # amount of frames at start to investigate performance
-        "neg_bc_active_frames": 100,  # actvity, including pauses, for NON-bc
-        "neg_bc_prefix_frames": 100,  # actvity, including pauses, for NON-bc
-    }
     # batch = next(iter(dm.val_dataloader()))
     projection_idx = codebook(VL.vad_projection(batch["vad"]))
     vad = batch["vad"]
+    ###################################################
+    # Backchannels
+    ###################################################
     isolated = find_isolated_within(
         vad,
-        prefix_frames=bc_dict["bc_pre_silence_frames"],
-        max_duration_frames=bc_dict["bc_max_active_frames"],
-        suffix_frames=bc_dict["bc_post_silence_frames"],
+        prefix_frames=bc_pre_silence_frames,
+        max_duration_frames=bc_max_active_frames,
+        suffix_frames=bc_post_silence_frames,
     )
     bc_pos, bc_neg = find_backchannel_ongoing(
         vad,
-        n_test_frames=bc_dict["bc_test_frames"],
-        pre_silence_frames=bc_dict["bc_pre_silence_frames"],
-        post_silence_frames=bc_dict["bc_post_silence_frames"],
-        max_active_frames=bc_dict["bc_max_active_frames"],
-        neg_active_frames=bc_dict["neg_bc_active_frames"],
-        neg_prefix_frames=bc_dict["neg_bc_prefix_frames"],
-        min_context_frames=bc_dict["min_context_frames"],
+        n_test_frames=bc_test_frames,
+        pre_silence_frames=bc_pre_silence_frames,
+        post_silence_frames=bc_post_silence_frames,
+        max_active_frames=bc_max_active_frames,
+        neg_active_frames=neg_bc_active_frames,
+        neg_prefix_frames=neg_bc_prefix_frames,
+        min_context_frames=min_context_frames,
         n_frames=1000,
     )
-    p = torch.rand_like(vad[:, :1000])
-    bc_probs, bc_labels = extract_backchannel_probs(p, bc_pos, bc_neg)
-    if bc_probs is not None:
-        print(bc_labels)
-
-    # for k, v in events.items():
-    #     print(f"{k}: {v.shape}")
+    # Use segment prior to bc_neg for our bc-pred-negatives
+    bc_pred_neg = recover_bc_prediction_negatives(bc_neg, neg_bc_prediction_window)
+    bc_pred_pos = backchannel_prediction_events(
+        projection_idx,
+        vad,
+        bc_speaker_idx=codebook.bc_prediction,
+        prediction_window=50,
+        isolated=None,
+        iso_kwargs=dict(
+            pre_silence_frames=bc_pre_silence_frames,
+            post_silence_frames=bc_post_silence_frames,
+            max_active_frames=bc_max_active_frames,
+        ),
+    )
+    # p = torch.rand_like(vad[:, :1000])
+    # bc_probs, bc_labels = extract_backchannel_probs(p, bc_pos, bc_neg)
+    # if bc_probs is not None:
+    #     print(bc_labels)
     fig, ax = plot_backchannel_prediction(
         vad, bc_pos, bc_color="g", linewidth=3, plot=False
     )
@@ -857,6 +877,10 @@ if __name__ == "__main__":
         a.plot(-bc_neg[i, :, 1], color="r", linewidth=3)
         a.plot(isolated[i, :, 0], color="k", linewidth=1, linestyle="dashed")
         a.plot(-isolated[i, :, 1], color="k", linewidth=1, linestyle="dashed")
+        a.plot(bc_pred_pos[i, :, 0], color="g", linewidth=2, linestyle="dashed")
+        a.plot(-bc_pred_pos[i, :, 1], color="g", linewidth=2, linestyle="dashed")
+        a.plot(bc_pred_neg[i, :, 0], color="r", linewidth=2, linestyle="dashed")
+        a.plot(-bc_pred_neg[i, :, 1], color="r", linewidth=2, linestyle="dashed")
     plt.pause(0.01)
 
     ###########################################################

@@ -469,9 +469,14 @@ class TurnTakingMetrics(Metric):
         bc_post_silence=3,
         bc_max_active=2,
         bc_prediction_window=0.5,
+        bc_neg_active=1.0,
+        bc_neg_prefix=1.0,
         frame_hz=100,
         bin_times=[0.2, 0.4, 0.6, 0.8],
         threshold=0.5,
+        threshold_bc_ongoing=0.5,
+        threshold_bc_pred=0.5,
+        bc_pred_pr_curve=False,
         discrete=True,
         dist_sync_on_step=False,
     ):
@@ -487,10 +492,23 @@ class TurnTakingMetrics(Metric):
             threshold=threshold, num_classes=2, multiclass=True, average="weighted"
         )
         self.bc_ongoing = F1Score(
-            threshold=threshold, num_classes=2, multiclass=True, average="weighted"
+            threshold=threshold_bc_ongoing,
+            num_classes=2,
+            multiclass=True,
+            average="weighted",
+        )
+        self.bc_pred = F1Score(
+            threshold=threshold_bc_pred,
+            num_classes=2,
+            multiclass=True,
+            average="weighted",
         )
         # self.bc = Accuracy(threshold=threshold)
-        self.bc_pred = Accuracy(threshold=0.1)
+        # self.bc_pred = Accuracy(threshold=0.1)
+
+        self.pr_curve_bc_pred = bc_pred_pr_curve
+        if self.pr_curve_bc_pred:
+            self.bc_pred_pr = PrecisionRecallCurve(pos_label=1)
 
         # Only available for discrete model
         self.discrete = discrete
@@ -510,11 +528,13 @@ class TurnTakingMetrics(Metric):
             min_context=min_context,
             start_pad=start_pad,
             target_duration=target_duration,
-            pre_active=pre_active,
             bc_pre_silence=bc_pre_silence,
             bc_post_silence=bc_post_silence,
             bc_max_active=bc_max_active,
             bc_prediction_window=bc_prediction_window,
+            pre_active=pre_active,  # shift/hold pre number of frames
+            bc_neg_active=bc_neg_active,
+            bc_neg_prefix=bc_neg_prefix,
             frame_hz=frame_hz,
         )
 
@@ -542,9 +562,12 @@ class TurnTakingMetrics(Metric):
         }
 
         try:
-            ret["bc_prediction"] = self.bc_pred.compute()
+            ret["f1_bc_prediction"] = self.bc_pred.compute()
         except:
             pass
+
+        if self.pr_curve_bc_pred:
+            ret["pr_curve_bc_pred"] = self.bc_pred_pr.compute()
 
         ret["shift"] = f1["shift"]
         ret["hold"] = f1["hold"]
@@ -621,10 +644,15 @@ class TurnTakingMetrics(Metric):
         # Backchannel Prediction
         if bc_pred_probs is not None:
             bc_pred, bc_pred_lab = extract_backchannel_prediction_probs(
-                bc_pred_probs, events["backchannel_prediction"]
+                bc_pred_probs,
+                bc_pred_pos=events["backchannel_prediction"],
+                bc_pred_neg=events["backchannel_prediction_neg"],
             )
+
             if bc_pred is not None:
                 self.bc_pred.update(bc_pred, bc_pred_lab)
+                if self.pr_curve_bc_pred:
+                    self.bc_pred_pr.update(bc_pred, bc_pred_lab)
 
         # Some metrics differ dependent on model
         if self.discrete:
