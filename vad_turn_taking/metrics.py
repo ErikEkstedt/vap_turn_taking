@@ -663,6 +663,7 @@ class TurnTakingMetrics(Metric):
 
 if __name__ == "__main__":
     from tqdm import tqdm
+    import matplotlib.pyplot as plt
     from conv_ssl.evaluation.utils import load_dm, load_model
     from conv_ssl.utils import to_device
 
@@ -677,20 +678,42 @@ if __name__ == "__main__":
     run_path = "how_so/VPModel/10krujrj"  # independent
     # run_path = "how_so/VPModel/sbzhz86n"  # discrete
     # run_path = "how_so/VPModel/2608x2g0"  # independent (same bin size)
-    model = load_model(run_path=run_path)
+    model = load_model(run_path=run_path, strict=False)
     model = model.eval()
     # model = model.to("cpu")
 
-    discrete = not model.conf["vad_projection"]["regression"]
+    # update vad_projection metrics
+    metric_kwargs = {
+        "event_pre": 0.5,  # seconds used to estimate PRE-f1-SHIFT/HOLD
+        "event_min_context": 1.0,  # min context duration before extracting metrics
+        "event_min_duration": 0.15,  # the minimum required segment to extract SHIFT/HOLD (start_pad+target_duration)
+        "event_horizon": 1.0,  # SHIFT/HOLD requires lookahead to determine mutual starts etc
+        "event_start_pad": 0.05,  # Predict SHIFT/HOLD after this many seconds of silence after last speaker
+        "event_target_duration": 0.10,  # duration of segment to extract each SHIFT/HOLD guess
+        "event_bc_target_duration": 0.25,  # duration of activity, in a backchannel, to extract BC-ONGOING metrics
+        "event_bc_pre_silence": 1,  # du
+        "event_bc_post_silence": 2,
+        "event_bc_max_active": 1.0,
+        "event_bc_prediction_window": 0.4,
+        "event_bc_neg_active": 1,
+        "event_bc_neg_prefix": 1,
+        "event_bc_ongoing_threshold": 0.5,
+        "event_bc_pred_threshold": 0.5,
+    }
+    # Updatemetric_kwargs metrics
+    for metric, val in metric_kwargs.items():
+        model.conf["vad_projection"][metric] = val
+
     N = 100
+    model.test_metric = model.init_metric(
+        model.conf, model.frame_hz, bc_pred_pr_curve=True
+    )
     # tt_metrics = TurnTakingMetricsDiscrete(bin_times=model.conf['vad_projection']['bin_times'])
-    tt_metrics = TurnTakingMetrics(discrete=discrete)
-    tt_metrics = tt_metrics.to(model.device)
-    for ii, batch in tqdm(enumerate(diter), total=N):
+    for ii, batch in tqdm(enumerate(dm.val_dataloader()), total=N):
         batch = to_device(batch, model.device)
         ########################################################################
         # Extract events/labels on full length (with horizon) VAD
-        events = tt_metrics.extract_events(batch["vad"])
+        events = model.test_metric.extract_events(batch["vad"])
         ########################################################################
         # Forward Pass through the model
         loss, out, batch = model.shared_step(batch)
@@ -699,41 +722,27 @@ if __name__ == "__main__":
         )
         ########################################################################
         # Update metrics
-        tt_metrics.update(
+        model.test_metric.update(
             p=turn_taking_probs["p"],
             pw=turn_taking_probs.get("pw", None),
             pre_probs=turn_taking_probs.get("pre_probs", None),
-            bc_pred_probs=turn_taking_probs.get("bc_pred_probs", None),
+            bc_pred_probs=turn_taking_probs.get("bc_prediction", None),
             events=events,
         )
         if ii == N:
             break
-    result = tt_metrics.compute()
+    result = model.test_metric.compute()
     print("f1_weighted: ", result["f1_weighted"])
     print("f1_pre_weighted: ", result["f1_pre_weighted"])
     print("f1_bc_ongoing: ", result["f1_bc_ongoing"])
-    # print("-" * 30)
-    # print("f1_weighted: ", r_old["f1_weighted"])
-    # print("f1_pre_weighted: ", r_old["f1_pre_weighted"])
-    # print("bc: ", r_old["bc"])
+    print("f1_bc_prediction: ", result["f1_bc_prediction"])
 
-    # for k, v in result.items():
-    #     print(f"{k}: {v}")
-    #
-    # print("\nOLD")
-    # for k, v in r_old.items():
-    #     print(f"{k}: {v}")
+    precision, recall, threshold = result["pr_curve_bc_pred"]
 
-    # ss = stat_scores.compute()
-    # r = f1.compute()
-    # r_pre = f1_pre.compute()
-    # r_pw = f1_pw.compute()
-    # precision, recall, thresholds = pr_curve.compute()
-
-    # fig, ax = plt.subplots(1, 1)
-    # ax.plot(recall.cpu(), precision.cpu())
-    # ax.set_xlabel("Recall")
-    # ax.set_xlim([0, 1])
-    # ax.set_ylabel("Precision")
-    # ax.set_ylim([0, 1])
-    # plt.show()
+    fig, ax = plt.subplots(1, 1)
+    ax.plot(recall.cpu(), precision.cpu())
+    ax.set_xlabel("Recall")
+    ax.set_xlim([0, 1])
+    ax.set_ylabel("Precision")
+    ax.set_ylim([0, 1])
+    plt.show()

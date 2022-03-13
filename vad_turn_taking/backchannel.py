@@ -626,49 +626,9 @@ def find_bc_prediction_negatives(vad, projection_window, ipu_lims):
     return negs
 
 
-@torch.no_grad()
-def extract_backchannel_probs_old(p, backchannel_event):
-    """
-    Extracts the probabilities associated with the relevant segments, given by `backchannel_event`, whether the 'short'
-    activation of a speaker is a 'backchannel' or if it's the start of a longer segment.
-
-    That is if speaker A is active and speaker B initates an utterance (which we already know is short i.e. a 'backchannel')
-    how much probability does the model put on speaker A to keep their turn?
-
-    The model should provide a lower probability of B being the next speaker than on A holding their turn.
-
-    Arguments:
-        p:                  torch.Tensor (B, N, 2), with probabilties associated with a bc prediction from speaker 0/1 respectively
-        backchannel_event : torch.Tensor (B, N, 2), one-hot encoding with segments where a backchannel prediction is valid.
-
-    Speaker A=0:
-        p [:, :, 0] -> prob of A bc prediction where, bc_event[:, :, 0] == 1
-    Speaker B=1:
-        p [:, :, 1] -> prob of A bc prediction where, bc_event[:, :, 1] == 1
-    """
-
-    probs = []
-    for bc_speaker in [0, 1]:
-        w = torch.where(backchannel_event[..., bc_speaker])
-        if len(w[0]) > 0:
-
-            # we know that 'bc_speaker' have a short backchannel
-            # and so the given activity should  be close to zero.
-            # we reverse this to get a 'regular' accuracy where probabilities
-            # closer to one is considered correct
-            probs.append(1 - p[w][..., bc_speaker])
-
-    # return None if no event existed
-    if len(probs) > 0:
-        probs = torch.cat(probs)
-        labels = torch.ones_like(probs, dtype=torch.long)
-    else:
-        probs = None
-        labels = None
-    return probs, labels
-
-
-@torch.no_grad()
+######################################################################
+################# Extract Probabilites from model output #############
+######################################################################
 def extract_backchannel_probs(p, bc_pos, bc_neg):
     """ """
 
@@ -718,7 +678,6 @@ def extract_backchannel_probs(p, bc_pos, bc_neg):
     return probs, labels
 
 
-@torch.no_grad()
 def extract_backchannel_prediction_probs(p, bc_pred_pos, bc_pred_neg):
     probs = []
     labels = []
@@ -743,6 +702,47 @@ def extract_backchannel_prediction_probs(p, bc_pred_pos, bc_pred_neg):
         probs = None
         labels = None
     return probs, labels
+
+
+def extract_backchannel_prediction_probs_independent(probs):
+    """
+
+    Extract the probabilities associated with
+
+    A:   |-|-|-|_|
+    B:   |.|.|.|-|
+
+    """
+    bc_pred = []
+    for current_speaker, backchanneler in zip([1, 0], [0, 1]):
+        # Between speaker diff
+        # --------------------
+        # Is the last bin of the "backchanneler" less probable than last bin of current speaker?
+        last_a_lt_b = probs[..., backchanneler, -1] < probs[..., current_speaker, -1]
+
+        # Within speaker diff
+        # --------------------
+        # Is the start/middle bins of the "backchanneler" greater than the last bin?
+        # I.e. does it predict an ending response?
+        mid_a_max, _ = probs[..., backchanneler, :-1].max(
+            dim=-1
+        )  # get prob (used with threshold)
+        mid_a_gt_last = (
+            mid_a_max > probs[..., backchanneler, -1]
+        )  # find where the condition is true
+
+        # Combine the between/within conditions
+        non_zero_probs = torch.logical_and(last_a_lt_b, mid_a_gt_last)
+
+        # Create probability tensor
+        # P=0 where conditions are not met
+        # P=max activation where condition is True
+        tmp_pred_probs = torch.zeros_like(mid_a_max)
+        tmp_pred_probs[non_zero_probs] = mid_a_max[non_zero_probs]
+        bc_pred.append(tmp_pred_probs)
+
+    bc_pred = torch.stack(bc_pred, dim=-1)
+    return bc_pred
 
 
 def bc():

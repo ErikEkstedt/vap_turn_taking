@@ -19,29 +19,6 @@ def add_start_end(x, val=[0], start=True):
     return torch.cat(out)
 
 
-def independent_bc_prediction(probs, bc_activity_threshold=0.0):
-    bc_pred = []
-    for current_speaker, backchanneler in zip([1, 0], [0, 1]):
-        # Between speaker diff
-        # is the last bin of the "backchanneler" less probable than last bin of current speaker?
-        last_a_lt_b = probs[..., backchanneler, -1] < probs[..., current_speaker, -1]
-        # within speaker diff
-        mid_a_max, _ = probs[..., backchanneler, :-1].max(dim=-1)
-        # Is the start/middle bins of the "backchanneler" greater than the last bin?
-        # i.e. does it predict an ending response?
-        mid_a_gt_last = mid_a_max > probs[..., backchanneler, -1]
-        if bc_activity_threshold > 0:
-            mid_a_gt_last = torch.logical_and(
-                mid_a_gt_last, mid_a_max >= bc_activity_threshold
-            )
-        tmp_bc_pred = torch.logical_and(last_a_lt_b, mid_a_gt_last)
-        bc_pred.append(tmp_bc_pred)
-    bc_pred = torch.stack(bc_pred, dim=-1)
-    # bool -> float
-    bc_pred = 1.0 * bc_pred
-    return bc_pred
-
-
 class VadLabel:
     def __init__(self, bin_times=[0.2, 0.4, 0.6, 0.8], vad_hz=100, threshold_ratio=0.5):
         self.bin_times = bin_times
@@ -384,11 +361,11 @@ class ProjectionCodebook(nn.Module):
             p.append(probs[..., pos_idx[next_speaker]].sum(dim=-1) / p_sum)
         return torch.stack(p, dim=-1)
 
-    def get_silence_shift_probs(self, probs):
-        return self.get_marginal_probs(probs, self.on_silent_shift, self.on_silent_hold)
-
-    def get_active_shift_probs(self, probs):
-        return self.get_marginal_probs(probs, self.on_active_shift, self.on_active_hold)
+    def next_speaker_probs(self, probs, silence=False):
+        if silence:
+            return self.get_marginal_probs(probs, self.on_silent_shift, self.on_silent_hold)
+        else:
+            return self.get_marginal_probs(probs, self.on_active_shift, self.on_active_hold)
 
     def get_next_speaker_probs(self, logits=None, vad=None, probs=None, pw=False):
         """
@@ -401,9 +378,14 @@ class ProjectionCodebook(nn.Module):
         if probs is None:
             probs = logits.softmax(dim=-1)
 
-        sil_probs = self.get_silence_shift_probs(probs)
-        act_probs = self.get_active_shift_probs(probs)
+        sil_probs = self.next_speaker_probs(probs, silence=True)
+        act_probs = self.next_speaker_probs(probs, silence=False)
+        # sil_probs = self.get_silence_shift_probs(probs)
+        # act_probs = self.get_active_shift_probs(probs)
 
+        # Start wit all zeros
+        # p_a: probability of A being next speaker (channel: 0)
+        # p_b: probability of B being next speaker (channel: 1)
         p_a = torch.zeros_like(sil_probs[..., 0])
         p_b = torch.zeros_like(sil_probs[..., 0])
 
@@ -442,25 +424,33 @@ class ProjectionCodebook(nn.Module):
             pw_b[w] = comp_sil[w][..., 1]
 
         # A current speaker
+        # Given only A is speaking we use the 'active' probability of B being the next speaker
         w = torch.where(a_current)
-        p_b[w] = act_probs[w][..., 1]
-        p_a[w] = 1 - act_probs[w][..., 1]
+        p_a[w] = 1 - act_probs[w][..., 1]  # P_a = 1-P_b 
+        p_b[w] = act_probs[w][..., 1]  # P_b
         if pw:
-            pw_b[w] = comp_act[w][..., 1]
             pw_a[w] = 1 - comp_act[w][..., 1]
+            pw_b[w] = comp_act[w][..., 1]
 
         # B current speaker
         w = torch.where(b_current)
-        p_a[w] = act_probs[w][..., 0]
-        p_b[w] = 1 - act_probs[w][..., 0]
+        p_a[w] = act_probs[w][..., 0] # P_a for A being next speaker, while B is active
+        p_b[w] = 1 - act_probs[w][..., 0] # P_b = 1-P_a
         if pw:
             pw_a[w] = comp_act[w][..., 0]
             pw_b[w] = 1 - comp_act[w][..., 0]
 
         # Both
+        # P_a_prior=A is next (active)
+        # P_b_prior=B is next (active)
+        # We the compare/renormalize given the two values of A/B is the next speaker
+        # sum = P_a_prior+P_b_prior
+        # P_a = P_a_prior / sum
+        # P_b = P_b_prior / sum
         w = torch.where(both)
         # Re-Normalize and compare next-active
         sum = act_probs[w][..., 0] + act_probs[w][..., 1]
+
         p_a[w] = act_probs[w][..., 0] / sum
         p_b[w] = act_probs[w][..., 1] / sum
 
@@ -603,7 +593,7 @@ if __name__ == "__main__":
     # Template figures
     # BC-Prediction
     fig, ax = plot_template(projection_type="bc_prediction", prefix_type="silence")
-    # fig, ax = plot_template(projection_type="bc_prediction", prefix_type="active")
+    fig, ax = plot_template(projection_type="bc_prediction", prefix_type="active")
     # Turn-shift / BC-Ongoing
     fig, ax = plot_template(projection_type="shift", prefix_type="silence")
     fig, ax = plot_template(projection_type="shift", prefix_type="active")
