@@ -453,7 +453,7 @@ class ShiftHoldMetric(Metric):
         self.event_update(p_next, events, bc_pre_probs=bc_pre_probs)
 
 
-class TurnTakingMetrics(Metric):
+class TurnTakingMetricsOld(Metric):
     """
     Used with discrete model, VADProjection.
     """
@@ -522,7 +522,7 @@ class TurnTakingMetrics(Metric):
         self.labeler = VadLabel(bin_times, vad_hz=frame_hz)
 
         # Extract the frames of interest for the given metrics
-        self.eventer = TurnTakingEvents(
+        self.eventer = TurnTakingEventsOld(
             bc_idx=self.codebook.bc_prediction,
             horizon=horizon,
             min_context=min_context,
@@ -661,6 +661,265 @@ class TurnTakingMetrics(Metric):
             self.update_independent(pre_probs, events)
 
 
+class TurnTakingMetrics(Metric):
+    """
+    Used with discrete model, VADProjection.
+    """
+
+    def __init__(
+        self,
+        threshold_pred_shift=0.5,
+        threshold_short_long=0.5,
+        threshold_bc_pred=0.5,
+        bc_pred_pr_curve=False,
+        frame_hz=100,
+        dist_sync_on_step=False,
+    ):
+        # call `self.add_state`for every internal state that is needed for the metrics computations
+        # dist_reduce_fx indicates the function that should be used to reduce
+        # state from multiple processes
+        super().__init__(dist_sync_on_step=dist_sync_on_step)
+
+        # Metrics
+        # self.f1: class to provide f1-weighted as well as other stats tp,fp,support, etc...
+        self.hs = F1_Hold_Shift()
+        self.predict_shift = F1Score(
+            threshold=threshold_pred_shift,
+            num_classes=2,
+            multiclass=True,
+            average="weighted",
+        )
+        self.short_long = F1Score(
+            threshold=threshold_short_long,
+            num_classes=2,
+            multiclass=True,
+            average="weighted",
+        )
+        self.predict_backchannel = F1Score(
+            threshold=threshold_bc_pred,
+            num_classes=2,
+            multiclass=True,
+            average="weighted",
+        )
+
+        self.pr_curve_bc_pred = bc_pred_pr_curve
+        if self.pr_curve_bc_pred:
+            self.bc_pred_pr = PrecisionRecallCurve(pos_label=1)
+
+        # Extract the frames of interest for the given metrics
+        self.eventer = TurnTakingEvents(
+            shift_onset_cond=1,
+            shift_offset_cond=1,
+            hold_onset_cond=1,
+            hold_offset_cond=1,
+            min_silence=0.15,
+            non_shift_horizon=2.0,
+            non_shift_majority_ratio=0.95,
+            metric_pad=0.05,
+            metric_dur=0.1,
+            metric_onset_dur=0.3,
+            metric_pre_label_dur=0.5,
+            metric_min_context=1.0,
+            bc_max_duration=1.0,
+            bc_pre_silence=1.0,
+            bc_post_silence=1.0,
+            frame_hz=frame_hz,
+        )
+
+    @torch.no_grad()
+    def extract_events(self, vad, max_frame=1000):
+        return self.eventer(vad, max_frame=max_frame)
+
+    def __repr__(self):
+        s = "TurnTakingMetrics"
+        s += self.eventer.__repr__()
+        return s
+
+    def update_short_long(self, p, short, long):
+        """
+        The given speaker in short/long is the one who initiated an onset.
+
+
+        correct classifications
+        * LONG next speaker -> same speaker
+        * SHORT next speaker -> other speaker
+
+        event -> label
+        short -> 0
+        long -> 1
+        """
+
+        probs, labels = [], []
+
+        # At the onset of a SHORT utterance the probability associated
+        # with that person being the next speaker should be low -> 0
+        if short.sum() > 0:
+            w = torch.where(short)
+            p_short = p[w]
+            probs.append(p_short)
+            labels.append(torch.zeros_like(p_short))
+
+        # At the onset of a LONG utterance the probability associated
+        # with that person being the next speaker should be high -> 1
+        if long.sum() > 0:
+            w = torch.where(long)
+            p_long = p[w]
+            probs.append(p_long)
+            labels.append(torch.ones_like(p_long))
+
+        if len(probs) > 0:
+            probs = torch.cat(probs)
+            labels = torch.cat(labels).long()
+            self.short_long.update(probs, labels)
+
+    def update_predict_shift(self, p, pos, neg):
+        """
+        Predict upcomming speaker shift. The events pos/neg are given for the
+        correct next speaker.
+
+        correct classifications
+        * pos next_speaker -> 1
+        * neg next_speaker -> 1
+
+        so we flip the negatives to have label 0 and take 1-p as their associated predictions
+
+        """
+        probs, labels = [], []
+
+        # At the onset of a SHORT utterance the probability associated
+        # with that person being the next speaker should be low -> 0
+        if pos.sum() > 0:
+            w = torch.where(pos)
+            p_pos = p[w]
+            probs.append(p_pos)
+            labels.append(torch.ones_like(p_pos))
+
+        # At the onset of a LONG utterance the probability associated
+        # with that person being the next speaker should be high -> 1
+        if neg.sum() > 0:
+            w = torch.where(neg)
+            p_neg = 1 - p[w]  # reverse to make negatives have label 0
+            probs.append(p_neg)
+            labels.append(torch.zeros_like(p_neg))
+
+        if len(probs) > 0:
+            probs = torch.cat(probs)
+            labels = torch.cat(labels).long()
+            self.predict_shift.update(probs, labels)
+
+    def update_predict_backchannel(self, bc_pred_probs, pos, neg):
+        """
+        bc_pred_probs contains the probabilities associated with the given speaker
+        initiating a backchannel in the "foreseeble" future.
+
+        At POSITIVE events the speaker resposible for the actual upcomming backchannel
+        is the same as the speaker in the event.
+
+        At NEGATIVE events the speaker that "could have been" responsible for the upcomming backchennel
+        is THE OTHER speaker so the probabilities much be switched.
+        The probabilties associated with predicting THE OTHER is goin to say a backchannel is wrong so we
+        flip the probabilities such that they should be close to 0.
+
+        """
+        probs, labels = [], []
+
+        if pos.sum() > 0:
+            w = torch.where(pos)
+            p_pos = bc_pred_probs[w]
+            probs.append(p_pos)
+            labels.append(torch.ones_like(p_pos))
+
+        if neg.sum() > 0:
+            wb, wn, w_speaker = torch.where(neg)
+            w_backchanneler = torch.logical_not(w_speaker).long()
+
+            p_neg = 1 - bc_pred_probs[(wb, wn, w_backchanneler)]
+            probs.append(p_neg)
+            labels.append(torch.zeros_like(p_neg))
+
+        if len(probs) > 0:
+            probs = torch.cat(probs)
+            labels = torch.cat(labels).long()
+            self.predict_backchannel(probs, labels)
+
+            if self.pr_curve_bc_pred:
+                self.bc_pred_pr.update(probs, labels)
+
+    def compute(self):
+        f1_hs = self.hs.compute()
+        f1_predict_shift = self.predict_shift.compute()
+        f1_short_long = self.short_long.compute()
+
+        ret = {
+            "f1_hold_shift": f1_hs["f1_weighted"],
+            "f1_predict_shift": f1_predict_shift,
+            "f1_short_long": f1_short_long,
+        }
+
+        try:
+            ret["f1_bc_prediction"] = self.predict_backchannel.compute()
+        except:
+            ret["f1_bc_prediction"] = -1
+
+        if self.pr_curve_bc_pred:
+            ret["pr_curve_bc_pred"] = self.bc_pred_pr.compute()
+
+        ret["shift"] = f1_hs["shift"]
+        ret["hold"] = f1_hs["hold"]
+        return ret
+
+    def update(
+        self, p, pre_probs=None, bc_pred_probs=None, events=None, vad=None, **kwargs
+    ):
+        """
+        p:              tensor, next_speaker probability. Must take into account current speaker such that it can be used for pre-shift/hold, backchannel-pred/ongoing
+        pre_probs:      tensor, on active next speaker probability for independent
+        bc_pred_probs:  tensor, Special probability associated with a backchannel prediction
+        events:         dict, containing information about the events in the sequences
+        vad:            tensor, VAD activity. Only used if events is not given.
+
+
+        events: [
+                    'shift',
+                    'hold',
+                    'short',
+                    'long',
+                    'predict_shift_pos',
+                    'predict_shift_neg',
+                    'predict_bc_pos',
+                    'predict_bc_neg'
+                ]
+        """
+
+        # Find valid event-frames if event is not given
+        if events is None:
+            events = self.extract_events(vad)
+
+        # SHIFT/HOLD
+        self.hs.update(p, hold=events["hold"], shift=events["shift"])
+
+        # PREDICT BACKCHANNELS
+        self.update_predict_backchannel(
+            bc_pred_probs, pos=events["predict_bc_pos"], neg=events["predict_bc_neg"]
+        )
+
+        # Long/Short
+        if pre_probs is None:
+            self.update_predict_shift(
+                p, pos=events["predict_shift_pos"], neg=events["predict_shift_neg"]
+            )
+            self.update_short_long(p, short=events["short"], long=events["long"])
+        else:
+            self.update_predict_shift(
+                pre_probs,
+                pos=events["predict_shift_pos"],
+                neg=events["predict_shift_neg"],
+            )
+            self.update_short_long(
+                pre_probs, short=events["short"], long=events["long"]
+            )
+
+
 if __name__ == "__main__":
     from tqdm import tqdm
     import matplotlib.pyplot as plt
@@ -669,8 +928,8 @@ if __name__ == "__main__":
 
     # Load Data
     # The only required data is VAD (onehot encoding of voice activity) e.g. (B, N_FRAMES, 2) for two speakers
-    dm = load_dm()
-    diter = iter(dm.val_dataloader())
+    dm = load_dm(batch_size=12)
+    # diter = iter(dm.val_dataloader())
 
     ###################################################
     # Load Model
@@ -681,39 +940,40 @@ if __name__ == "__main__":
     model = load_model(run_path=run_path, strict=False)
     model = model.eval()
     # model = model.to("cpu")
+    # model = model.to("cpu")
 
-    # update vad_projection metrics
-    metric_kwargs = {
-        "event_pre": 0.5,  # seconds used to estimate PRE-f1-SHIFT/HOLD
-        "event_min_context": 1.0,  # min context duration before extracting metrics
-        "event_min_duration": 0.15,  # the minimum required segment to extract SHIFT/HOLD (start_pad+target_duration)
-        "event_horizon": 1.0,  # SHIFT/HOLD requires lookahead to determine mutual starts etc
-        "event_start_pad": 0.05,  # Predict SHIFT/HOLD after this many seconds of silence after last speaker
-        "event_target_duration": 0.10,  # duration of segment to extract each SHIFT/HOLD guess
-        "event_bc_target_duration": 0.25,  # duration of activity, in a backchannel, to extract BC-ONGOING metrics
-        "event_bc_pre_silence": 1,  # du
-        "event_bc_post_silence": 2,
-        "event_bc_max_active": 1.0,
-        "event_bc_prediction_window": 0.4,
-        "event_bc_neg_active": 1,
-        "event_bc_neg_prefix": 1,
-        "event_bc_ongoing_threshold": 0.5,
-        "event_bc_pred_threshold": 0.5,
-    }
-    # Updatemetric_kwargs metrics
-    for metric, val in metric_kwargs.items():
-        model.conf["vad_projection"][metric] = val
+    # # update vad_projection metrics
+    # metric_kwargs = {
+    #     "event_pre": 0.5,  # seconds used to estimate PRE-f1-SHIFT/HOLD
+    #     "event_min_context": 1.0,  # min context duration before extracting metrics
+    #     "event_min_duration": 0.15,  # the minimum required segment to extract SHIFT/HOLD (start_pad+target_duration)
+    #     "event_horizon": 1.0,  # SHIFT/HOLD requires lookahead to determine mutual starts etc
+    #     "event_start_pad": 0.05,  # Predict SHIFT/HOLD after this many seconds of silence after last speaker
+    #     "event_target_duration": 0.10,  # duration of segment to extract each SHIFT/HOLD guess
+    #     "event_bc_target_duration": 0.25,  # duration of activity, in a backchannel, to extract BC-ONGOING metrics
+    #     "event_bc_pre_silence": 1,  # du
+    #     "event_bc_post_silence": 2,
+    #     "event_bc_max_active": 1.0,
+    #     "event_bc_prediction_window": 0.4,
+    #     "event_bc_neg_active": 1,
+    #     "event_bc_neg_prefix": 1,
+    #     "event_bc_ongoing_threshold": 0.5,
+    #     "event_bc_pred_threshold": 0.5,
+    # }
+    # # Updatemetric_kwargs metrics
+    # for metric, val in metric_kwargs.items():
+    #     model.conf["vad_projection"][metric] = val
 
-    N = 100
+    N = 1000
     model.test_metric = model.init_metric(
-        model.conf, model.frame_hz, bc_pred_pr_curve=True
+        model.conf, model.frame_hz, bc_pred_pr_curve=False
     )
     # tt_metrics = TurnTakingMetricsDiscrete(bin_times=model.conf['vad_projection']['bin_times'])
     for ii, batch in tqdm(enumerate(dm.val_dataloader()), total=N):
         batch = to_device(batch, model.device)
         ########################################################################
         # Extract events/labels on full length (with horizon) VAD
-        events = model.test_metric.extract_events(batch["vad"])
+        events = model.test_metric.extract_events(batch["vad"], max_frame=1000)
         ########################################################################
         # Forward Pass through the model
         loss, out, batch = model.shared_step(batch)
@@ -732,17 +992,22 @@ if __name__ == "__main__":
         if ii == N:
             break
     result = model.test_metric.compute()
-    print("f1_weighted: ", result["f1_weighted"])
-    print("f1_pre_weighted: ", result["f1_pre_weighted"])
-    print("f1_bc_ongoing: ", result["f1_bc_ongoing"])
-    print("f1_bc_prediction: ", result["f1_bc_prediction"])
+    print(result.keys())
 
-    precision, recall, threshold = result["pr_curve_bc_pred"]
+    for k, v in result.items():
+        print(f"{k}: {v}")
 
-    fig, ax = plt.subplots(1, 1)
-    ax.plot(recall.cpu(), precision.cpu())
-    ax.set_xlabel("Recall")
-    ax.set_xlim([0, 1])
-    ax.set_ylabel("Precision")
-    ax.set_ylim([0, 1])
-    plt.show()
+    # print("f1_weighted: ", result["f1_weighted"])
+    # print("f1_pre_weighted: ", result["f1_pre_weighted"])
+    # print("f1_bc_ongoing: ", result["f1_bc_ongoing"])
+    # print("f1_bc_prediction: ", result["f1_bc_prediction"])
+
+    # precision, recall, threshold = result["pr_curve_bc_pred"]
+    #
+    # fig, ax = plt.subplots(1, 1)
+    # ax.plot(recall.cpu(), precision.cpu())
+    # ax.set_xlabel("Recall")
+    # ax.set_xlim([0, 1])
+    # ax.set_ylabel("Precision")
+    # ax.set_ylim([0, 1])
+    # plt.show()

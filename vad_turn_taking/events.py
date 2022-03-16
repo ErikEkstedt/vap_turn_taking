@@ -13,7 +13,7 @@ from vad_turn_taking.backchannels import Backhannels
 from vad_turn_taking.hold_shifts import HoldShift, get_dialog_states, get_last_speaker
 
 
-class TurnTakingEvents:
+class TurnTakingEventsOld:
     def __init__(
         self,
         bc_idx,
@@ -133,7 +133,7 @@ class TurnTakingEvents:
         return ret
 
 
-class TurnTakingEvents2:
+class TurnTakingEvents:
     def __init__(
         self,
         shift_onset_cond=1,
@@ -233,9 +233,9 @@ class TurnTakingEvents2:
                 for s, d in zip(starts, durs):
                     neg_candidates.append([b, s, s + d, sp])
 
-        sampled_negs = np_random.choice(
-            torch.arange(len(neg_candidates)), size=n, replace=False
-        )
+        sampled_negs = torch.arange(len(neg_candidates))
+        if len(neg_candidates) > n:
+            sampled_negs = np_random.choice(sampled_negs, size=n, replace=False)
 
         negs = torch.zeros_like(x)
         for ni in sampled_negs:
@@ -293,9 +293,9 @@ class TurnTakingEvents2:
                     for neg_start in torch.arange(s + onset_pad, end, dur):
                         neg_candidates.append([b, neg_start, sp])
 
-        sampled_negs = np_random.choice(
-            torch.arange(len(neg_candidates)), size=n, replace=False
-        )
+        sampled_negs = torch.arange(len(neg_candidates))
+        if len(neg_candidates) > n:
+            sampled_negs = np_random.choice(sampled_negs, size=n, replace=False)
 
         negs = torch.zeros_like(x)
         for ni in sampled_negs:
@@ -303,7 +303,7 @@ class TurnTakingEvents2:
             negs[b, s : s + dur, sp] = 1.0
         return negs.float()
 
-    def __call__(self, vad):
+    def __call__(self, vad, max_frame=1000):
         ds = get_dialog_states(vad)
         last_speaker = get_last_speaker(vad, ds)
 
@@ -311,11 +311,11 @@ class TurnTakingEvents2:
         # shift, pre_shift, long_shift_onset,
         # hold, pre_hold, long_hold_onset,
         # shift_overlap, pre_shift_overlap, non_shift
-        tt = self.HS(vad, ds=ds)
+        tt = self.HS(vad=vad, ds=ds, max_frame=max_frame)
 
         # Backchannels:
         # backchannel, pre_backchannel
-        bcs = self.BS(vad, last_speaker)
+        bcs = self.BS(vad=vad, last_speaker=last_speaker, max_frame=max_frame)
 
         #######################################################
         # LONG/SHORT
@@ -359,7 +359,6 @@ class TurnTakingEvents2:
         # Pos: 0.5 second prior a backchannel
         # Neg: Sampled from NON-SHIFT, everywhere
         n_pre_bc = self.count_occurances(bcs["pre_backchannel"])
-        print("n_pre_bc: ", n_pre_bc)
         if n_pre_bc == 0:
             predict_bc_neg = torch.zeros_like(bcs["pre_backchannel"])
         else:
@@ -393,7 +392,7 @@ def debug_tt2():
     batch = next(diter)
     vad = batch["vad"]
 
-    eventer = TurnTakingEvents2(
+    eventer = TurnTakingEvents(
         min_silence=0.3,
         metric_pad=0.1,
         metric_dur=0.2,

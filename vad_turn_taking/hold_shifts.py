@@ -198,6 +198,8 @@ class HoldShift:
         filled_vad = vad.clone()
         for b in range(ds.shape[0]):
             s, d, v = find_island_idx_len(ds[b])
+            if len(v) < 3:
+                continue
             triads = v.unfold(0, size=3, step=1)
             next_speaker, steps = torch.where(
                 (triads == template.unsqueeze(1)).sum(-1) == 3
@@ -217,6 +219,7 @@ class HoldShift:
         post_cond_frames,
         pre_match=False,
         onset_match=False,
+        max_frame=None,
     ):
         """
         Creates a onehot vector where the steps matching the template.
@@ -241,6 +244,10 @@ class HoldShift:
             )
         for b in range(ds.shape[0]):
             s, d, v = find_island_idx_len(ds[b])
+
+            if len(v) < 3:
+                continue
+
             triads = v.unfold(0, size=3, step=1)
             next_speaker, steps = torch.where(
                 (triads == template.unsqueeze(1)).sum(-1) == 3
@@ -310,24 +317,36 @@ class HoldShift:
                 # if self.metric_dur > 0:
                 #     end = start + self.metric_dur
 
-                match_oh[
-                    b, s[cur] + self.metric_pad : s[cur] + d[cur] + self.metric_pad, ns
-                ] = 1.0
-                # match_oh[b, start:end, ns] = 1.0
+                # Max frame condition:
+                # Can't have event outside of predictable window
+                if max_frame is not None:
+                    if s[cur] >= max_frame:
+                        continue
 
                 if pre_match:
                     pre_match_oh[
                         b, s[cur] - self.metric_pre_label_dur : s[cur], ns
                     ] = 1.0
 
+                end = s[cur] + self.metric_pad + d[cur]
+                # Max frame condition:
+                # Can't have event outside of predictable window
+                if max_frame is not None:
+                    if end >= max_frame:
+                        continue
+
+                match_oh[b, s[cur] + self.metric_pad : end, ns] = 1.0
+
                 if onset_match:
-                    onset_match_oh[
-                        b, s[post] : s[post] + self.metric_onset_dur, ns
-                    ] = 1.0
+                    end = s[post] + self.metric_onset_dur
+                    if max_frame is not None:
+                        if end >= max_frame:
+                            continue
+                    onset_match_oh[b, s[post] : end, ns] = 1.0
 
         return match_oh, pre_match_oh, onset_match_oh
 
-    def non_shifts(self, vad, last_speaker, horizon, majority_ratio=1):
+    def non_shifts(self, vad, last_speaker, horizon, majority_ratio=1, max_frame=None):
         """
 
         Non-shifts are all parts of the VAD signal where a future of `horizon`
@@ -346,6 +365,9 @@ class HoldShift:
         vv = vad[:, 1:].unfold(1, size=horizon, step=1).sum(dim=-1)
         vv = vv / (vv.sum(-1, keepdim=True) + EPS)
 
+        if max_frame is not None:
+            vv = vv[:, :max_frame]
+
         # Majority_ratio. Add eps to value to not miss majority_ratio==1.
         # because we divided 1
         maj_speaker_cond = majority_ratio <= (vv + EPS)
@@ -358,9 +380,14 @@ class HoldShift:
         non_shift = torch.stack((a_non_shift, b_non_shift), dim=-1).float()
         return non_shift
 
-    def __call__(self, vad, ds=None, filled_vad=None):
+    def __call__(self, vad, ds=None, filled_vad=None, max_frame=1000):
         if ds is None:
             ds = get_dialog_states(vad)
+
+        if vad.device != self.hold_template.device:
+            self.shift_template = self.shift_template.to(vad.device)
+            self.shift_overlap_template = self.shift_overlap_template.to(vad.device)
+            self.hold_template = self.hold_template.to(vad.device)
 
         if filled_vad is None:
             filled_vad = self.fill_template(vad, ds, self.hold_template)
@@ -373,6 +400,7 @@ class HoldShift:
             post_cond_frames=self.shift_onset_cond,
             pre_match=True,
             onset_match=True,
+            max_frame=max_frame,
         )
         shift_ov_oh, _, _ = self.match_template(
             filled_vad,
@@ -382,6 +410,7 @@ class HoldShift:
             post_cond_frames=self.shift_onset_cond,
             pre_match=False,
             onset_match=False,
+            max_frame=max_frame,
         )
         hold_oh, pre_hold_oh, long_hold_onset = self.match_template(
             filled_vad,
@@ -391,6 +420,7 @@ class HoldShift:
             post_cond_frames=self.hold_onset_cond,
             pre_match=True,
             onset_match=True,
+            max_frame=max_frame,
         )
 
         last_speaker = get_last_speaker(vad, ds)
@@ -399,6 +429,7 @@ class HoldShift:
             last_speaker,
             horizon=self.non_shift_horizon,
             majority_ratio=self.non_shift_majority_ratio,
+            max_frame=max_frame,
         )
 
         return {
