@@ -302,16 +302,18 @@ class HoldShift:
                     # input()
                     continue
 
-                start = s[cur]
-                end = s[cur] + d[cur]
-                if self.metric_pad > 0:
-                    start += self.metric_pad
+                # start = s[cur]
+                # end = s[cur] + d[cur]
+                # if self.metric_pad > 0:
+                #     start += self.metric_pad
+                #
+                # if self.metric_dur > 0:
+                #     end = start + self.metric_dur
 
-                if self.metric_dur > 0:
-                    end = start + self.metric_dur
-
-                # match_oh[b,  : s[cur] + d[cur], ns] = 1.0
-                match_oh[b, start:end, ns] = 1.0
+                match_oh[
+                    b, s[cur] + self.metric_pad : s[cur] + d[cur] + self.metric_pad, ns
+                ] = 1.0
+                # match_oh[b, start:end, ns] = 1.0
 
                 if pre_match:
                     pre_match_oh[

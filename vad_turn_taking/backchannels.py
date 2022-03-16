@@ -40,18 +40,22 @@ class Backhannels:
     def __init__(
         self,
         max_duration_frames,
+        min_duration_frames,
         pre_silence_frames,
         post_silence_frames,
         metric_dur_frames,
+        metric_pre_label_dur,
     ):
 
         assert (
             metric_dur_frames <= max_duration_frames
         ), "`metric_dur_frames` must be less than `max_duration_frames`"
         self.max_duration_frames = max_duration_frames
+        self.min_duration_frames = min_duration_frames
         self.pre_silence_frames = pre_silence_frames
         self.post_silence_frames = post_silence_frames
         self.metric_dur_frames = metric_dur_frames
+        self.metric_pre_label_dur = metric_pre_label_dur
 
     def __repr__(self):
         s = "\nBackchannel"
@@ -75,6 +79,7 @@ class Backhannels:
         """
 
         bc_oh = torch.zeros_like(vad)
+        pre_bc_oh = torch.zeros_like(vad)
         for b, vad_tmp in enumerate(vad):
 
             for speaker in [0, 1]:
@@ -89,6 +94,9 @@ class Backhannels:
                     # Activity duration condition: segment must be shorter than
                     # a certain number of frames
                     if durs[step] > self.max_duration_frames:
+                        continue
+
+                    if durs[step] < self.min_duration_frames:
                         continue
 
                     start = starts[step]
@@ -115,7 +123,12 @@ class Backhannels:
                     if self.metric_dur_frames > 0:
                         end = starts[step] + self.metric_dur_frames
                     bc_oh[b, starts[step] : end, speaker] = 1.0
-        return bc_oh
+                    pre_bc_oh[
+                        b,
+                        starts[step] - self.metric_pre_label_dur : starts[step],
+                        speaker,
+                    ] = 1.0
+        return bc_oh, pre_bc_oh
 
     def __call__(self, vad, last_speaker=None, ds=None):
 
@@ -125,8 +138,8 @@ class Backhannels:
         if last_speaker is None:
             last_speaker = get_last_speaker(vad, ds)
 
-        bc_oh = self.backchannel(vad, last_speaker)
-        return {"backchannel": bc_oh}
+        bc_oh, pre_bc = self.backchannel(vad, last_speaker)
+        return {"backchannel": bc_oh, "pre_backchannel": pre_bc}
 
 
 if __name__ == "__main__":
