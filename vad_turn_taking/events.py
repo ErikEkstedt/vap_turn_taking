@@ -1,12 +1,15 @@
 import torch
 
-from vad_turn_taking.utils import find_island_idx_len, time_to_frames
+from vad_turn_taking.utils import time_to_frames
 from vad_turn_taking.backchannel import (
     backchannel_prediction_events,
     find_backchannel_ongoing,
     recover_bc_prediction_negatives,
 )
-from vad_turn_taking.vad import DialogEvents, VAD
+from vad_turn_taking.vad import DialogEvents
+
+from vad_turn_taking.backchannels import Backhannels
+from vad_turn_taking.hold_shifts import HoldShift, get_dialog_states, get_last_speaker
 
 
 class TurnTakingEvents:
@@ -127,6 +130,183 @@ class TurnTakingEvents:
             ret[return_name] = vector[:, :n_frames]
 
         return ret
+
+
+class TurnTakingEvents2:
+    def __init__(
+        self,
+        shift_onset_cond=1,
+        shift_offset_cond=1,
+        hold_onset_cond=1,
+        hold_offset_cond=1,
+        min_silence=0.15,
+        non_shift_horizon=2.0,
+        non_shift_majority_ratio=0.95,
+        metric_pad=0.05,
+        metric_dur=0.1,
+        metric_onset_dur=0.5,
+        metric_pre_label_dur=0.5,
+        bc_max_duration=0.5,
+        bc_pre_silence=1.0,
+        bc_post_silence=1.0,
+        bc_metric_dur=0.5,
+        frame_hz=100,
+    ):
+
+        assert (
+            metric_onset_dur == bc_metric_dur
+        ), "`metric_onset_dur` must be equal to `bc_metric_dur`"
+        shift_onset_cond = time_to_frames(shift_onset_cond, frame_hz)
+        shift_offset_cond = time_to_frames(shift_offset_cond, frame_hz)
+        hold_onset_cond = time_to_frames(hold_onset_cond, frame_hz)
+        hold_offset_cond = time_to_frames(hold_offset_cond, frame_hz)
+        min_silence = time_to_frames(min_silence, frame_hz)
+        metric_pad = time_to_frames(metric_pad, frame_hz)
+        metric_dur = time_to_frames(metric_dur, frame_hz)
+        metric_pre_label_dur = time_to_frames(metric_pre_label_dur, frame_hz)
+        metric_onset_dur = time_to_frames(metric_onset_dur, frame_hz)
+        non_shift_horizon = time_to_frames(non_shift_horizon, frame_hz)
+        non_shift_majority_ratio = non_shift_majority_ratio
+
+        # bc
+        bc_max_duration_frames = time_to_frames(bc_max_duration, frame_hz)
+        bc_pre_silence_frames = time_to_frames(bc_pre_silence, frame_hz)
+        bc_post_silence_frames = time_to_frames(bc_post_silence, frame_hz)
+        bc_metric_dur_frames = time_to_frames(bc_metric_dur, frame_hz)
+
+        self.HS = HoldShift(
+            shift_onset_cond=shift_onset_cond,
+            shift_offset_cond=shift_offset_cond,
+            hold_onset_cond=hold_onset_cond,
+            hold_offset_cond=hold_offset_cond,
+            min_silence=min_silence,
+            metric_pad=metric_pad,
+            metric_dur=metric_dur,
+            metric_pre_label_dur=metric_pre_label_dur,
+            metric_onset_dur=metric_onset_dur,
+            non_shift_horizon=non_shift_horizon,
+            non_shift_majority_ratio=non_shift_majority_ratio,
+        )
+        self.BS = Backhannels(
+            max_duration_frames=bc_max_duration_frames,
+            pre_silence_frames=bc_pre_silence_frames,
+            post_silence_frames=bc_post_silence_frames,
+            metric_dur_frames=bc_metric_dur_frames,
+        )
+
+    def __repr__(self):
+        s = "TurnTakingEvents\n"
+        s += str(self.HS) + "\n"
+        s += str(self.BS)
+        return s
+
+    def __call__(self, vad):
+        ds = get_dialog_states(vad)
+        last_speaker = get_last_speaker(vad, ds)
+
+        # Where a single speaker is active
+        activity = ds == 0  # only A
+        activity = torch.logical_or(activity, ds == 3)  # AND only B
+
+        # HOLDS/SHIFTS
+        # shift, pre_shift, long_shift_onset,
+        # hold, pre_hold, long_hold_onset,
+        # shift_overlap, pre_shift_overlap, non_shift
+
+        tt = self.HS(vad, ds=ds)
+
+        # Backchannels: backchannel
+        bcs = self.BS(vad, last_speaker)
+
+        tt.update(bcs)
+
+        n = tt["non_shift"].shape[1]
+        non_shift_on_activity = torch.logical_and(
+            tt["non_shift"], activity[:, :n].unsqueeze(-1)
+        )
+        nons_act = torch.where(non_shift_on_activity)
+
+        # LONG/SHORT
+        # shorts: backchannels
+
+        # Shift/Hold
+
+        # Predict shift
+        # Pos: window, on activity, prior to EOT before a SHIFT
+        # Neg: Sampled from NON-SHIFT, on activity.
+
+        # Predict backchannels
+        # Pos: 1 second prior a backchannel
+        # Neg: Sampled from NON-SHIFT, everywhere
+
+        return tt
+
+
+def debug_tt2():
+
+    import matplotlib.pyplot as plt
+    from conv_ssl.evaluation.utils import load_dm
+    from vad_turn_taking.plot_utils import plot_vad_oh
+
+    # Load Data
+    # The only required data is VAD (onehot encoding of voice activity) e.g. (B, N_FRAMES, 2) for two speakers
+    dm = load_dm(batch_size=16)
+    diter = iter(dm.val_dataloader())
+    batch = next(diter)
+
+    eventer = TurnTakingEvents2(
+        min_silence=0.2,
+        metric_pad=0.1,
+        metric_dur=0.1,
+        metric_onset_dur=0.5,
+        bc_metric_dur=0.5,
+    )
+    eventer
+
+    batch = next(diter)
+
+    vad = batch["vad"]
+    tt = eventer(vad)
+
+    _ = [print(k) for k in list(tt.keys())]
+
+    n_rows = 4
+    n_cols = 4
+    fig, ax = plt.subplots(n_rows, n_cols, sharey=True, sharex=True, figsize=(16, 4))
+    b = 0
+    for row in range(n_rows):
+        for col in range(n_cols):
+            _ = plot_vad_oh(vad[b], ax=ax[row, col])
+            _ = plot_vad_oh(
+                tt["shift"][b], ax=ax[row, col], colors=["g", "g"], alpha=0.5
+            )
+            _ = plot_vad_oh(
+                tt["shift_overlap"][b],
+                ax=ax[row, col],
+                colors=["darkgreen", "darkgreen"],
+                alpha=0.8,
+            )
+            _ = plot_vad_oh(
+                tt["hold"][b], ax=ax[row, col], colors=["r", "r"], alpha=0.5
+            )
+            _ = plot_vad_oh(
+                tt["backchannel"][b],
+                ax=ax[row, col],
+                colors=["purple", "purple"],
+                alpha=0.8,
+            )
+            _ = plot_vad_oh(
+                tt["non_shift"][b].flip(-1),
+                ax=ax[row, col],
+                colors=["darkred", "darkred"],
+                alpha=0.15,
+            )
+            b += 1
+            if b == vad.shape[0]:
+                break
+        if b == vad.shape[0]:
+            break
+    plt.pause(0.1)
 
 
 if __name__ == "__main__":
