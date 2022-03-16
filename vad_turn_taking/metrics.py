@@ -674,6 +674,7 @@ class TurnTakingMetrics(Metric):
         bc_pred_pr_curve=False,
         frame_hz=100,
         dist_sync_on_step=False,
+        **event_kwargs,
     ):
         # call `self.add_state`for every internal state that is needed for the metrics computations
         # dist_reduce_fx indicates the function that should be used to reduce
@@ -707,24 +708,7 @@ class TurnTakingMetrics(Metric):
             self.bc_pred_pr = PrecisionRecallCurve(pos_label=1)
 
         # Extract the frames of interest for the given metrics
-        self.eventer = TurnTakingEvents(
-            shift_onset_cond=1,
-            shift_offset_cond=1,
-            hold_onset_cond=1,
-            hold_offset_cond=1,
-            min_silence=0.15,
-            non_shift_horizon=2.0,
-            non_shift_majority_ratio=0.95,
-            metric_pad=0.05,
-            metric_dur=0.1,
-            metric_onset_dur=0.3,
-            metric_pre_label_dur=0.5,
-            metric_min_context=1.0,
-            bc_max_duration=1.0,
-            bc_pre_silence=1.0,
-            bc_post_silence=1.0,
-            frame_hz=frame_hz,
-        )
+        self.eventer = TurnTakingEvents(**event_kwargs, frame_hz=frame_hz)
 
     @torch.no_grad()
     def extract_events(self, vad, max_frame=1000):
@@ -934,13 +918,31 @@ if __name__ == "__main__":
     ###################################################
     # Load Model
     ###################################################
-    run_path = "how_so/VPModel/10krujrj"  # independent
-    # run_path = "how_so/VPModel/sbzhz86n"  # discrete
+    # run_path = "how_so/VPModel/10krujrj"  # independent
+    run_path = "how_so/VPModel/sbzhz86n"  # discrete
     # run_path = "how_so/VPModel/2608x2g0"  # independent (same bin size)
     model = load_model(run_path=run_path, strict=False)
     model = model.eval()
     # model = model.to("cpu")
     # model = model.to("cpu")
+
+    event_kwargs = dict(
+        shift_onset_cond=1,
+        shift_offset_cond=1,
+        hold_onset_cond=1,
+        hold_offset_cond=1,
+        min_silence=0.15,
+        non_shift_horizon=2.0,
+        non_shift_majority_ratio=0.95,
+        metric_pad=0.05,
+        metric_dur=0.1,
+        metric_onset_dur=0.3,
+        metric_pre_label_dur=0.5,
+        metric_min_context=1.0,
+        bc_max_duration=1.0,
+        bc_pre_silence=1.0,
+        bc_post_silence=1.0,
+    )
 
     # # update vad_projection metrics
     # metric_kwargs = {
@@ -964,9 +966,9 @@ if __name__ == "__main__":
     # for metric, val in metric_kwargs.items():
     #     model.conf["vad_projection"][metric] = val
 
-    N = 1000
+    N = 10
     model.test_metric = model.init_metric(
-        model.conf, model.frame_hz, bc_pred_pr_curve=False
+        model.conf, model.frame_hz, bc_pred_pr_curve=False, **event_kwargs
     )
     # tt_metrics = TurnTakingMetricsDiscrete(bin_times=model.conf['vad_projection']['bin_times'])
     for ii, batch in tqdm(enumerate(dm.val_dataloader()), total=N):
