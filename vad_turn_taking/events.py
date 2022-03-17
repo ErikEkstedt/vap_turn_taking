@@ -151,6 +151,7 @@ class TurnTakingEvents:
         bc_max_duration=1.0,
         bc_pre_silence=1.0,
         bc_post_silence=1.0,
+        min_context=0,
         frame_hz=100,
     ):
 
@@ -159,6 +160,7 @@ class TurnTakingEvents:
         self.metric_pre_label_dur = time_to_frames(metric_pre_label_dur, frame_hz)
         self.metric_onset_dur = time_to_frames(metric_onset_dur, frame_hz)
         self.metric_min_context = time_to_frames(metric_min_context, frame_hz)
+        self.min_context = time_to_frames(min_context, frame_hz)
 
         # Shift/Hold
         shift_onset_cond = time_to_frames(shift_onset_cond, frame_hz)
@@ -307,15 +309,24 @@ class TurnTakingEvents:
         ds = get_dialog_states(vad)
         last_speaker = get_last_speaker(vad, ds)
 
+        # TODO:
+        # TODO: having all events as a list/dict with (b, start, end, speaker) may be very much faster?
+        # TODO:
+
         # HOLDS/SHIFTS:
         # shift, pre_shift, long_shift_onset,
         # hold, pre_hold, long_hold_onset,
         # shift_overlap, pre_shift_overlap, non_shift
-        tt = self.HS(vad=vad, ds=ds, max_frame=max_frame)
+        tt = self.HS(vad=vad, ds=ds, max_frame=max_frame, min_context=self.min_context)
 
         # Backchannels:
         # backchannel, pre_backchannel
-        bcs = self.BS(vad=vad, last_speaker=last_speaker, max_frame=max_frame)
+        bcs = self.BS(
+            vad=vad,
+            last_speaker=last_speaker,
+            max_frame=max_frame,
+            min_context=self.min_context,
+        )
 
         #######################################################
         # LONG/SHORT

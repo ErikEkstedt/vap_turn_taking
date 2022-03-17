@@ -64,7 +64,7 @@ class Backhannels:
         s += f"\n  post_silence_frames: {self.post_silence_frames}"
         return s
 
-    def backchannel(self, vad, last_speaker, max_frame=None):
+    def backchannel(self, vad, last_speaker, max_frame=None, min_context=0):
         """
         Finds backchannel based on VAD signal. Iterates over batches and speakers.
 
@@ -129,7 +129,16 @@ class Backhannels:
                         if end >= max_frame:
                             continue
 
+                    # Min Context condition:
+                    if starts[step] < min_context:
+                        continue
+
                     bc_oh[b, starts[step] : end, speaker] = 1.0
+
+                    # Min Context condition:
+                    if (starts[step] - self.metric_pre_label_dur) < min_context:
+                        continue
+
                     pre_bc_oh[
                         b,
                         starts[step] - self.metric_pre_label_dur : starts[step],
@@ -137,7 +146,7 @@ class Backhannels:
                     ] = 1.0
         return bc_oh, pre_bc_oh
 
-    def __call__(self, vad, last_speaker=None, ds=None, max_frame=None):
+    def __call__(self, vad, last_speaker=None, ds=None, max_frame=None, min_context=0):
 
         if ds is None:
             ds = get_dialog_states(vad)
@@ -145,7 +154,9 @@ class Backhannels:
         if last_speaker is None:
             last_speaker = get_last_speaker(vad, ds)
 
-        bc_oh, pre_bc = self.backchannel(vad, last_speaker, max_frame=max_frame)
+        bc_oh, pre_bc = self.backchannel(
+            vad, last_speaker, max_frame=max_frame, min_context=min_context
+        )
         return {"backchannel": bc_oh, "pre_backchannel": pre_bc}
 
 
