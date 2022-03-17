@@ -324,16 +324,17 @@ class TurnTakingEvents:
         # where SHORT segments are "backchannel" and LONG har onset on new TURN (SHIFTs)
         # or onset of HOLD ipus
         short = bcs["backchannel"]
-        n_short = self.count_occurances(short)
-        if n_short == 0:
-            long = torch.zeros_like(short)
-        else:
-            # Combine hold/shift onsets. They are both considerd long.
-            long_onsets = torch.logical_or(
-                tt["long_shift_onset"], tt["long_hold_onset"]
-            )
-            # sample equal from onsets over holds/shifts
-            long = self.sample_negative_segments(long_onsets, n_short)
+        # n_short = self.count_occurances(short)
+        long = self.sample_negative_segments(tt["long_shift_onset"], 1000)
+        # if n_short == 0:
+        #     long = torch.zeros_like(short)
+        # else:
+        #     # Combine hold/shift onsets. They are both considerd long.
+        #     long_onsets = torch.logical_or(
+        #       tt["long_shift_onset"], tt["long_hold_onset"]
+        #     )
+        #     sample equal from onsets over holds/shifts
+        #     long = self.sample_negative_segments(long_onsets, n_short)
 
         #######################################################
         # Predict shift
