@@ -363,9 +363,13 @@ class ProjectionCodebook(nn.Module):
 
     def next_speaker_probs(self, probs, silence=False):
         if silence:
-            return self.get_marginal_probs(probs, self.on_silent_shift, self.on_silent_hold)
+            return self.get_marginal_probs(
+                probs, self.on_silent_shift, self.on_silent_hold
+            )
         else:
-            return self.get_marginal_probs(probs, self.on_active_shift, self.on_active_hold)
+            return self.get_marginal_probs(
+                probs, self.on_active_shift, self.on_active_hold
+            )
 
     def get_next_speaker_probs(self, logits=None, vad=None, probs=None, pw=False):
         """
@@ -426,7 +430,7 @@ class ProjectionCodebook(nn.Module):
         # A current speaker
         # Given only A is speaking we use the 'active' probability of B being the next speaker
         w = torch.where(a_current)
-        p_a[w] = 1 - act_probs[w][..., 1]  # P_a = 1-P_b 
+        p_a[w] = 1 - act_probs[w][..., 1]  # P_a = 1-P_b
         p_b[w] = act_probs[w][..., 1]  # P_b
         if pw:
             pw_a[w] = 1 - comp_act[w][..., 1]
@@ -434,8 +438,8 @@ class ProjectionCodebook(nn.Module):
 
         # B current speaker
         w = torch.where(b_current)
-        p_a[w] = act_probs[w][..., 0] # P_a for A being next speaker, while B is active
-        p_b[w] = 1 - act_probs[w][..., 0] # P_b = 1-P_a
+        p_a[w] = act_probs[w][..., 0]  # P_a for A being next speaker, while B is active
+        p_b[w] = 1 - act_probs[w][..., 0]  # P_b = 1-P_a
         if pw:
             pw_a[w] = comp_act[w][..., 0]
             pw_b[w] = 1 - comp_act[w][..., 0]
@@ -508,6 +512,130 @@ class ProjectionCodebook(nn.Module):
     def forward(self, projection_window):
         # return self.idx_to_onehot(idx)
         return self.onehot_to_idx(projection_window)
+
+
+class ProjectionIndependent:
+    def __init__(self, pre_frames=2, bin_times=[0.20, 0.40, 0.60, 0.80], frame_hz=100):
+        super().__init__()
+        self.pre_frames = pre_frames
+        self.bin_times = bin_times
+        self.frame_hz = frame_hz
+
+    def _normalize_reg_probs(self, probs):
+        probs = probs.sum(dim=-1)  # sum all bins for each speaker
+        return probs / probs.sum(dim=-1, keepdim=True)  # norm
+
+    def backchannel_prediction_probs(self, probs):
+        """
+
+        Extract the probabilities associated with
+
+        A:   |-|-|-|_|
+        B:   |.|.|.|-|
+
+        """
+        bc_pred = []
+
+        # Iterate over speakers
+        for current_speaker, backchanneler in zip([1, 0], [0, 1]):
+            # Between speaker diff
+            # --------------------
+            # Is the last bin of the "backchanneler" less probable than last bin of current speaker?
+            last_a_lt_b = (
+                probs[..., backchanneler, -1] < probs[..., current_speaker, -1]
+            )
+
+            # Within speaker diff
+            # --------------------
+            # Is the start/middle bins of the "backchanneler" greater than the last bin?
+            # I.e. does it predict an ending response?
+            mid_a_max, _ = probs[..., backchanneler, :-1].max(
+                dim=-1
+            )  # get prob (used with threshold)
+            mid_a_gt_last = (
+                mid_a_max > probs[..., backchanneler, -1]
+            )  # find where the condition is true
+
+            # Combine the between/within conditions
+            non_zero_probs = torch.logical_and(last_a_lt_b, mid_a_gt_last)
+
+            # Create probability tensor
+            # P=0 where conditions are not met
+            # P=max activation where condition is True
+            tmp_pred_probs = torch.zeros_like(mid_a_max)
+            tmp_pred_probs[non_zero_probs] = mid_a_max[non_zero_probs]
+            bc_pred.append(tmp_pred_probs)
+
+        bc_pred = torch.stack(bc_pred, dim=-1)
+        return bc_pred
+
+    def organize_next_speker_probs(self, sil_probs, act_probs, vad):
+        """
+        Organize probabilities condition on the current vad-dialog-state
+        * 0 -> only A
+        * 1 -> silence
+        * 2 -> both active
+        * 3 -> only B
+
+        """
+        # Start wit all zeros
+        # p_a: probability of A being next speaker (channel: 0)
+        # p_b: probability of B being next speaker (channel: 1)
+        p_a = torch.zeros_like(sil_probs[..., 0])
+        p_b = torch.zeros_like(sil_probs[..., 0])
+
+        # dialog states
+        ds = VAD.vad_to_dialog_vad_states(vad)
+        silence = ds == 1
+        a_current = ds == 0
+        b_current = ds == 3
+        both = ds == 2
+
+        ##########################################
+        # silence
+        w = torch.where(silence)
+        p_a[w] = sil_probs[w][..., 0]
+        p_b[w] = sil_probs[w][..., 1]
+
+        ##########################################
+        # A current speaker
+        # Given only A is speaking we use the 'active' probability of B being the next speaker
+        w = torch.where(a_current)
+        p_a[w] = 1 - act_probs[w][..., 1]  # P_a = 1-P_b
+        p_b[w] = act_probs[w][..., 1]  # P_b
+
+        ##########################################
+        # B current speaker
+        w = torch.where(b_current)
+        p_a[w] = act_probs[w][..., 0]  # P_a for A being next speaker, while B is active
+        p_b[w] = 1 - act_probs[w][..., 0]  # P_b = 1-P_a
+
+        ##########################################
+        # Both
+        # P_a_prior=A is next (active)
+        # P_b_prior=B is next (active)
+        # We the compare/renormalize given the two values of A/B is the next speaker
+        # sum = P_a_prior+P_b_prior
+        # P_a = P_a_prior / sum
+        # P_b = P_b_prior / sum
+        w = torch.where(both)
+        sum = act_probs[w][..., 0] + act_probs[w][..., 1]
+        p_a[w] = act_probs[w][..., 0] / sum
+        p_b[w] = act_probs[w][..., 1] / sum
+
+        return torch.stack((p_a, p_b), dim=-1)
+
+    def get_probs(self, logits, vad=None):
+        # Compare chosen subset of next-speaker-activity
+        probs = logits.sigmoid()
+        next_probs = self._normalize_reg_probs(probs)
+        p_on_active = self._normalize_reg_probs(probs[..., :, self.pre_frames :])
+        p_ns = self.organize_next_speker_probs(next_probs, p_on_active, vad)
+        bc_prediction = self.backchannel_prediction_probs(probs)
+        return {"p": p_ns, "p_on_active": p_on_active, "bc_prediction": bc_prediction}
+
+    def __call__(self, logits, vad=None):
+        return self.get_probs(logits, vad)
 
 
 def time_label_making():

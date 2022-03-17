@@ -672,6 +672,8 @@ class TurnTakingMetrics(Metric):
         threshold_short_long=0.5,
         threshold_bc_pred=0.5,
         bc_pred_pr_curve=False,
+        shift_pred_pr_curve=False,
+        long_short_pr_curve=False,
         frame_hz=100,
         dist_sync_on_step=False,
         **event_kwargs,
@@ -707,6 +709,14 @@ class TurnTakingMetrics(Metric):
         if self.pr_curve_bc_pred:
             self.bc_pred_pr = PrecisionRecallCurve(pos_label=1)
 
+        self.pr_curve_shift_pred = shift_pred_pr_curve
+        if self.pr_curve_shift_pred:
+            self.shift_pred_pr = PrecisionRecallCurve(pos_label=1)
+
+        self.pr_curve_long_short = long_short_pr_curve
+        if self.pr_curve_long_short:
+            self.long_short_pr = PrecisionRecallCurve(pos_label=1)
+
         # Extract the frames of interest for the given metrics
         self.eventer = TurnTakingEvents(**event_kwargs, frame_hz=frame_hz)
 
@@ -723,14 +733,11 @@ class TurnTakingMetrics(Metric):
         """
         The given speaker in short/long is the one who initiated an onset.
 
-
-        correct classifications
-        * LONG next speaker -> same speaker
-        * SHORT next speaker -> other speaker
+        Use the backchannel (prediction) prob to recognize short utterance.
 
         event -> label
-        short -> 0
-        long -> 1
+        short -> 1
+        long -> 0
         """
 
         probs, labels = [], []
@@ -741,7 +748,8 @@ class TurnTakingMetrics(Metric):
             w = torch.where(short)
             p_short = p[w]
             probs.append(p_short)
-            labels.append(torch.zeros_like(p_short))
+            # labels.append(torch.zeros_like(p_short))
+            labels.append(torch.ones_like(p_short))
 
         # At the onset of a LONG utterance the probability associated
         # with that person being the next speaker should be high -> 1
@@ -749,12 +757,16 @@ class TurnTakingMetrics(Metric):
             w = torch.where(long)
             p_long = p[w]
             probs.append(p_long)
-            labels.append(torch.ones_like(p_long))
+            # labels.append(torch.ones_like(p_long))
+            labels.append(torch.zeros_like(p_long))
 
         if len(probs) > 0:
             probs = torch.cat(probs)
             labels = torch.cat(labels).long()
             self.short_long.update(probs, labels)
+
+            if self.pr_curve_long_short:
+                self.long_short_pr.update(probs, labels)
 
     def update_predict_shift(self, p, pos, neg):
         """
@@ -790,6 +802,9 @@ class TurnTakingMetrics(Metric):
             probs = torch.cat(probs)
             labels = torch.cat(labels).long()
             self.predict_shift.update(probs, labels)
+
+            if self.pr_curve_shift_pred:
+                self.shift_pred_pr.update(probs, labels)
 
     def update_predict_backchannel(self, bc_pred_probs, pos, neg):
         """
@@ -848,6 +863,12 @@ class TurnTakingMetrics(Metric):
         if self.pr_curve_bc_pred:
             ret["pr_curve_bc_pred"] = self.bc_pred_pr.compute()
 
+        if self.pr_curve_shift_pred:
+            ret["pr_curve_shift_pred"] = self.shift_pred_pr.compute()
+
+        if self.pr_curve_long_short:
+            ret["pr_curve_long_short"] = self.long_short_pr.compute()
+
         ret["shift"] = f1_hs["shift"]
         ret["hold"] = f1_hs["hold"]
         return ret
@@ -892,10 +913,12 @@ class TurnTakingMetrics(Metric):
             self.update_predict_shift(
                 p, pos=events["predict_shift_pos"], neg=events["predict_shift_neg"]
             )
-            self.update_short_long(p, short=events["short"], long=events["long"])
+            self.update_short_long(
+                bc_pred_probs, short=events["short"], long=events["long"]
+            )
         else:
             self.update_predict_shift(
-                pre_probs,
+                p,
                 pos=events["predict_shift_pos"],
                 neg=events["predict_shift_neg"],
             )
@@ -941,7 +964,7 @@ if __name__ == "__main__":
         metric_min_context=1.0,
         bc_max_duration=1.0,
         bc_pre_silence=1.0,
-        bc_post_silence=1.0,
+        bc_post_silence=3.0,
     )
 
     # # update vad_projection metrics
