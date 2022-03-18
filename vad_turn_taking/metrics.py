@@ -829,10 +829,12 @@ class TurnTakingMetrics(Metric):
             labels.append(torch.ones_like(p_pos))
 
         if neg.sum() > 0:
+            # where is negative samples?
             wb, wn, w_speaker = torch.where(neg)
             w_backchanneler = torch.logical_not(w_speaker).long()
 
-            p_neg = 1 - bc_pred_probs[(wb, wn, w_backchanneler)]
+            # p_neg = 1 - bc_pred_probs[(wb, wn, w_backchanneler)]
+            p_neg = bc_pred_probs[(wb, wn, w_backchanneler)]
             probs.append(p_neg)
             labels.append(torch.zeros_like(p_neg))
 
