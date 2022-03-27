@@ -906,9 +906,12 @@ class TurnTakingMetrics(Metric):
         self.hs.update(p, hold=events["hold"], shift=events["shift"])
 
         # PREDICT BACKCHANNELS
-        self.update_predict_backchannel(
-            bc_pred_probs, pos=events["predict_bc_pos"], neg=events["predict_bc_neg"]
-        )
+        if bc_pred_probs is not None:
+            self.update_predict_backchannel(
+                bc_pred_probs,
+                pos=events["predict_bc_pos"],
+                neg=events["predict_bc_neg"],
+            )
 
         # Long/Short
         if pre_probs is None:
