@@ -328,6 +328,8 @@ def plot_template(
     alpha_required=0.6,
     alpha_optional=0.2,
     alpha_prefix=0.6,
+    lw_box=2,
+    legend_ts=12,
     pad=0.02,
     plot=False,
 ):
@@ -337,6 +339,7 @@ def plot_template(
     ], "projection type must be in ['shift', 'bc_prediction']"
     assert prefix_type in [
         "silence",
+        "both",
         "active",
         "overlap",
     ], "prefix type must be in ['silence', 'active', 'overlap']"
@@ -347,9 +350,8 @@ def plot_template(
 
     fig, ax = plt.subplots(1, 1)
     handles = []
+    # Draw horizontal line (speaker separation)
     ax.hlines(y=0, xmin=0, xmax=bins[-1], linewidth=2, color="k")
-    # Draw current line
-    ax.vlines(current, ymin=-1, ymax=1, linewidth=5, color="r", label="current time")
     # current, = ax.plot([current, current], [-1, 1], linewidth=5, color="r", label='current time')
     # handles.append(current)
 
@@ -367,6 +369,27 @@ def plot_template(
                 edgecolor=colors[1],
             )
         )
+    elif prefix_type == "both":
+        ax.add_patch(
+            Rectangle(
+                xy=(0, -1),
+                width=1,
+                height=1,
+                facecolor=colors[1],
+                alpha=alpha_prefix,
+                edgecolor=colors[1],
+            )
+        )
+        ax.add_patch(
+            Rectangle(
+                xy=(1, -1),
+                width=0.5,
+                height=1,
+                facecolor=colors[1],
+                alpha=alpha_optional + 0.05,
+                edgecolor=colors[1],
+            )
+        )
     else:
         ax.add_patch(
             Rectangle(
@@ -378,6 +401,26 @@ def plot_template(
                 edgecolor=colors[1],
             )
         )
+        # ax.add_patch(
+        #     Rectangle(
+        #         xy=(0, -1),
+        #         width=1,
+        #         height=1,
+        #         facecolor=colors[1],
+        #         alpha=alpha_prefix,
+        #         edgecolor=colors[1],
+        #     )
+        # )
+        # ax.add_patch(
+        #     Rectangle(
+        #         xy=(1, -1),
+        #         width=0.5,
+        #         height=1,
+        #         facecolor=colors[1],
+        #         alpha=alpha_optional+0.05,
+        #         edgecolor=colors[1],
+        #     )
+        # )
         if prefix_type == "overlap":
             ax.add_patch(
                 Rectangle(
@@ -474,13 +517,16 @@ def plot_template(
         ax.add_patch(required_b)
 
     # Draw lines for projection window template
-    ax.vlines(bins[1:-1], ymin=-1, ymax=1, linewidth=2, color="k")
-    ax.hlines(y=[-1, 1], xmin=1.5, xmax=bins[-1], linewidth=2, color="k")
-    ax.vlines(bins[-1], ymin=-1, ymax=1, linewidth=2, color="k")
+    ax.vlines(bins[1:-1], ymin=-1, ymax=1, linewidth=lw_box, color="k")
+    ax.hlines(y=[-1, 1], xmin=1.5, xmax=bins[-1], linewidth=lw_box, color="k")
+    ax.vlines(bins[-1], ymin=-1, ymax=1, linewidth=lw_box, color="k")
+    # Draw current line
+    ax.vlines(current, ymin=-1, ymax=1, linewidth=5, color="r", label="current time")
+
     ax.set_yticks([])
     ax.set_xticks([])
     ax.set_xlim([0, bins[-1] + 0.05])
-    ax.legend(loc="upper left", handles=handles)
+    ax.legend(loc="upper left", handles=handles, fontsize=legend_ts)
 
     plt.subplots_adjust(
         left=pad, bottom=pad, right=1 - pad, top=1 - pad, wspace=None, hspace=None

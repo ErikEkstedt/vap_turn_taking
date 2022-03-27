@@ -380,14 +380,14 @@ class TurnTakingEvents:
 
         # return tt
         return {
-            "shift": tt["shift"],
-            "hold": tt["hold"],
-            "short": short,
-            "long": long,
-            "predict_shift_pos": tt["pre_shift"],
-            "predict_shift_neg": predict_shift_neg,
-            "predict_bc_pos": bcs["pre_backchannel"],
-            "predict_bc_neg": predict_bc_neg,
+            "shift": tt["shift"][:, :max_frame],
+            "hold": tt["hold"][:, :max_frame],
+            "short": short[:, :max_frame],
+            "long": long[:, :max_frame],
+            "predict_shift_pos": tt["pre_shift"][:, :max_frame],
+            "predict_shift_neg": predict_shift_neg[:, :max_frame],
+            "predict_bc_pos": bcs["pre_backchannel"][:, :max_frame],
+            "predict_bc_neg": predict_bc_neg[:, :max_frame],
         }
 
 

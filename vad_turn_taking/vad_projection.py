@@ -688,16 +688,22 @@ if __name__ == "__main__":
     codebook = ProjectionCodebook(bin_times=bin_times)
     labeler = VadLabel(bin_times=bin_times, vad_hz=vad_hz)
     eventer = TurnTakingEvents(
-        bc_idx=codebook.bc_prediction,
-        horizon=event_kwargs["event_horizon"],
-        min_context=event_kwargs["event_min_context"],
-        start_pad=event_kwargs["event_start_pad"],
-        target_duration=event_kwargs["event_target_duration"],
-        pre_active=event_kwargs["event_pre"],
-        bc_pre_silence=event_kwargs["event_bc_pre_silence"],
-        bc_post_silence=event_kwargs["event_bc_post_silence"],
-        bc_max_active=event_kwargs["event_bc_max_active"],
-        bc_prediction_window=event_kwargs["event_bc_prediction_window"],
+        shift_onset_cond=1,
+        shift_offset_cond=1,
+        hold_onset_cond=1,
+        hold_offset_cond=1,
+        min_silence=0.15,
+        non_shift_horizon=2.0,
+        non_shift_majority_ratio=0.95,
+        metric_pad=0.05,
+        metric_dur=0.1,
+        metric_onset_dur=0.3,
+        metric_pre_label_dur=0.5,
+        metric_min_context=1.0,
+        bc_max_duration=1.0,
+        bc_pre_silence=1.0,
+        bc_post_silence=1.0,
+        min_context=0,
         frame_hz=vad_hz,
     )
     print("bc: ", codebook.bc_prediction.shape)
@@ -720,10 +726,25 @@ if __name__ == "__main__":
 
     # Template figures
     # BC-Prediction
-    fig, ax = plot_template(projection_type="bc_prediction", prefix_type="silence")
-    fig, ax = plot_template(projection_type="bc_prediction", prefix_type="active")
+    fig, ax = plot_template(
+        projection_type="bc_prediction", prefix_type="both", lw_box=4, legend_ts=15
+    )
+    plt.show()
+
+    fig, ax = plot_template(
+        projection_type="bc_prediction", prefix_type="overlap", lw_box=4, legend_ts=15
+    )
+    plt.show()
+
+    # fig, ax = plot_template(projection_type="bc_prediction", prefix_type="active")
+
+    # FFC966
     # Turn-shift / BC-Ongoing
-    fig, ax = plot_template(projection_type="shift", prefix_type="silence")
-    fig, ax = plot_template(projection_type="shift", prefix_type="active")
-    fig, ax = plot_template(projection_type="shift", prefix_type="overlap")
-    plt.pause(0.01)
+    # fig, ax = plot_template(projection_type="shift", prefix_type="silence", lw_box=4, legend_ts=15)
+    fig, ax = plot_template(
+        projection_type="shift", prefix_type="active", lw_box=4, legend_ts=15
+    )
+    plt.show()
+
+    # fig, ax = plot_template(projection_type="shift", prefix_type="overlap")
+    # plt.pause(0.01)
