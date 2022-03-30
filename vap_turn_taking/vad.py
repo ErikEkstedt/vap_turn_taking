@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 
-from vad_turn_taking.utils import time2frames, find_island_idx_len
+from vap_turn_taking.utils import time2frames, find_island_idx_len
 
 
 class VAD:

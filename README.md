@@ -1,2 +1,3 @@
-# vad_turn_taking
-vad
+# VAP: Voice Activity Projection
+
+TBA

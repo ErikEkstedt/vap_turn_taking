@@ -3,11 +3,11 @@
 from setuptools import setup
 
 setup(
-    name="vad_turn_taking",
+    name="vap_turn_taking",
     version="0.0.0",
-    description="VAD (voice-activity-detection) help functions",
+    description="VAP (Voice Activity Projection)",
     author="erikekst",
     author_email="erikekst@kth.se",
-    url="https://github.com/ErikEkstedt/vad_turn_taking",
-    packages=["vad_turn_taking"],
+    url="https://github.com/ErikEkstedt/vap_turn_taking",
+    packages=["vap_turn_taking"],
 )

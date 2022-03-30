@@ -1,16 +1,16 @@
 import torch
 import numpy.random as np_random
 
-from vad_turn_taking.utils import time_to_frames, find_island_idx_len
-from vad_turn_taking.backchannel import (
+from vap_turn_taking.utils import time_to_frames, find_island_idx_len
+from vap_turn_taking.backchannel import (
     backchannel_prediction_events,
     find_backchannel_ongoing,
     recover_bc_prediction_negatives,
 )
-from vad_turn_taking.vad import DialogEvents
+from vap_turn_taking.vad import DialogEvents
 
-from vad_turn_taking.backchannels import Backhannels
-from vad_turn_taking.hold_shifts import HoldShift, get_dialog_states, get_last_speaker
+from vap_turn_taking.backchannels import Backhannels
+from vap_turn_taking.hold_shifts import HoldShift, get_dialog_states, get_last_speaker
 
 
 class TurnTakingEventsOld:
@@ -395,7 +395,7 @@ def debug_tt2():
 
     import matplotlib.pyplot as plt
     from conv_ssl.evaluation.utils import load_dm
-    from vad_turn_taking.plot_utils import plot_vad_oh
+    from vap_turn_taking.plot_utils import plot_vad_oh
 
     # Load Data
     # The only required data is VAD (onehot encoding of voice activity) e.g. (B, N_FRAMES, 2) for two speakers
@@ -520,9 +520,9 @@ def debug_tt2():
 if __name__ == "__main__":
 
     from conv_ssl.evaluation.utils import load_dm
-    from vad_turn_taking.plot_utils import plot_backchannel_prediction
-    from vad_turn_taking.vad_projection import ProjectionCodebook, VadLabel
-    from vad_turn_taking.backchannel import find_isolated_within
+    from vap_turn_taking.plot_utils import plot_backchannel_prediction
+    from vap_turn_taking.vad_projection import ProjectionCodebook, VadLabel
+    from vap_turn_taking.backchannel import find_isolated_within
     import matplotlib.pyplot as plt
 
     # Load Data

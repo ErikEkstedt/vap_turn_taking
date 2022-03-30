@@ -1,6 +1,6 @@
 import torch
-from vad_turn_taking.vad import VAD
-from vad_turn_taking.utils import find_island_idx_len, find_label_match
+from vap_turn_taking.vad import VAD
+from vap_turn_taking.utils import find_island_idx_len, find_label_match
 
 
 def find_isolated_within(vad, prefix_frames, max_duration_frames, suffix_frames):
@@ -748,11 +748,11 @@ def extract_backchannel_prediction_probs_independent(probs):
 def bc():
     import matplotlib.pyplot as plt
     from conv_ssl.evaluation.utils import load_dm
-    from vad_turn_taking.plot_utils import (
+    from vap_turn_taking.plot_utils import (
         plot_backchannel_prediction,
         plot_projection_window,
     )
-    from vad_turn_taking.vad_projection import ProjectionCodebook, VadLabel
+    from vap_turn_taking.vad_projection import ProjectionCodebook, VadLabel
 
     # Load Data
     # The only required data is VAD (onehot encoding of voice activity) e.g. (B, N_FRAMES, 2) for two speakers
@@ -800,8 +800,8 @@ if __name__ == "__main__":
 
     from tqdm import tqdm
     from conv_ssl.evaluation.utils import load_dm
-    from vad_turn_taking.plot_utils import plot_backchannel_prediction
-    from vad_turn_taking.vad_projection import ProjectionCodebook, VadLabel
+    from vap_turn_taking.plot_utils import plot_backchannel_prediction
+    from vap_turn_taking.vad_projection import ProjectionCodebook, VadLabel
     import matplotlib.pyplot as plt
 
     bin_times = [0.2, 0.4, 0.6, 0.8]

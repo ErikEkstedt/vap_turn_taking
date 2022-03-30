@@ -1,6 +1,6 @@
 import torch
 
-from vad_turn_taking.utils import find_island_idx_len
+from vap_turn_taking.utils import find_island_idx_len
 
 
 def get_dialog_states(vad) -> torch.Tensor:
@@ -469,7 +469,7 @@ class HoldShift:
 if __name__ == "__main__":
 
     import matplotlib.pyplot as plt
-    from vad_turn_taking.plot_utils import plot_vad_oh
+    from vap_turn_taking.plot_utils import plot_vad_oh
 
     vad = torch.zeros((3, 150, 2), dtype=torch.float)
     # Gap shifts

@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from vad_turn_taking.backchannel import extract_backchannel_prediction_probs_independent
+from vap_turn_taking.backchannel import extract_backchannel_prediction_probs_independent
 
 
 @pytest.mark.backchannel

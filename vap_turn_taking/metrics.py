@@ -1,14 +1,14 @@
 import torch
 from torchmetrics import Metric, Accuracy, F1Score, PrecisionRecallCurve, StatScores
 
-from vad_turn_taking.backchannel import (
+from vap_turn_taking.backchannel import (
     extract_backchannel_probs,
     extract_backchannel_prediction_probs,
 )
-from vad_turn_taking.events import TurnTakingEvents
-from vad_turn_taking.vad import DialogEvents, VAD
-from vad_turn_taking.vad_projection import VadLabel, ProjectionCodebook
-from vad_turn_taking.utils import time_to_frames
+from vap_turn_taking.events import TurnTakingEvents
+from vap_turn_taking.vad import DialogEvents, VAD
+from vap_turn_taking.vad_projection import VadLabel, ProjectionCodebook
+from vap_turn_taking.utils import time_to_frames
 
 
 @torch.no_grad()

@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from vad_turn_taking.utils import time_to_frames
-from vad_turn_taking.vad import VAD
+from vap_turn_taking.utils import time_to_frames
+from vap_turn_taking.vad import VAD
 
 
 def add_start_end(x, val=[0], start=True):
@@ -664,8 +664,8 @@ def time_label_making():
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    from vad_turn_taking.plot_utils import plot_all_projection_windows, plot_template
-    from vad_turn_taking.events import TurnTakingEvents
+    from vap_turn_taking.plot_utils import plot_all_projection_windows, plot_template
+    from vap_turn_taking.events import TurnTakingEvents
     from conv_ssl.evaluation.utils import load_dm
 
     dm = load_dm()

@@ -1,7 +1,7 @@
 import torch
 
-from vad_turn_taking.utils import find_island_idx_len
-from vad_turn_taking.hold_shifts import get_dialog_states, get_last_speaker
+from vap_turn_taking.utils import find_island_idx_len
+from vap_turn_taking.hold_shifts import get_dialog_states, get_last_speaker
 
 
 def find_isolated_within(vad, prefix_frames, max_duration_frames, suffix_frames):
@@ -162,7 +162,7 @@ class Backhannels:
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    from vad_turn_taking.plot_utils import plot_vad_oh
+    from vap_turn_taking.plot_utils import plot_vad_oh
 
     BS = Backhannels(
         max_duration_frames=60,
