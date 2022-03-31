@@ -1,102 +1,71 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
+from typing import List, Tuple, Union
 
-from vap_turn_taking.utils import (
-    time_to_frames,
-    vad_to_dialog_vad_states,
-    get_last_speaker,
-)
-
-# from vap_turn_taking.va import
+from vap_turn_taking.utils import vad_to_dialog_vad_states
 
 
-def add_start_end(x, val=[0], start=True):
-    n = x.shape[0]
-    out = []
-    for v in val:
-        pad = torch.ones(n) * v
-        if start:
-            o = torch.cat((pad.unsqueeze(1), x), dim=-1)
+def probs_ind_backchannel(probs):
+    """
+
+    Extract the probabilities associated with
+
+    A:   |__|--|--|__|
+    B:   |__|__|__|--|
+
+    """
+    bc_pred = []
+
+    # Iterate over speakers
+    for current_speaker, backchanneler in zip([1, 0], [0, 1]):
+        # Between speaker diff
+        # --------------------
+        # Is the last bin of the "backchanneler" less probable than last bin of current speaker?
+        last_a_lt_b = probs[..., backchanneler, -1] < probs[..., current_speaker, -1]
+
+        # Within speaker diff
+        # --------------------
+        # Is the start/middle bins of the "backchanneler" greater than the last bin?
+        # I.e. does it predict an ending response?
+        mid_a_max, _ = probs[..., backchanneler, :-1].max(
+            dim=-1
+        )  # get prob (used with threshold)
+        mid_a_gt_last = (
+            mid_a_max > probs[..., backchanneler, -1]
+        )  # find where the condition is true
+
+        # Combine the between/within conditions
+        non_zero_probs = torch.logical_and(last_a_lt_b, mid_a_gt_last)
+
+        # Create probability tensor
+        # P=0 where conditions are not met
+        # P=max activation where condition is True
+        tmp_pred_probs = torch.zeros_like(mid_a_max)
+        tmp_pred_probs[non_zero_probs] = mid_a_max[non_zero_probs]
+        bc_pred.append(tmp_pred_probs)
+
+    bc_pred = torch.stack(bc_pred, dim=-1)
+    return bc_pred
+
+
+def sort_idx(x):
+    if x.ndim == 1:
+        x, _ = x.sort()
+    elif x.ndim == 2:
+        if x.shape[0] == 2:
+            a, _ = x[0].sort()
+            b, _ = x[1].sort()
+            x = torch.stack((a, b))
         else:
-            o = torch.cat((x, pad.unsqueeze(1)), dim=-1)
-        out.append(o)
-    return torch.cat(out)
+            x, _ = x[0].sort()
+            x = x.unsqueeze(0)
+    return x
 
 
-class VadLabel:
-    def __init__(self, bin_times=[0.2, 0.4, 0.6, 0.8], vad_hz=100, threshold_ratio=0.5):
-        self.bin_times = bin_times
-        self.vad_hz = vad_hz
-        self.threshold_ratio = threshold_ratio
-
-        self.bin_sizes = time_to_frames(bin_times, vad_hz)
-        self.n_bins = len(self.bin_sizes)
-        self.total_bins = self.n_bins * 2
-        self.horizon = sum(self.bin_sizes)
-
-    def horizon_to_onehot(self, vad_projections):
-        """
-        Iterate over the bin boundaries and sum the activity
-        for each channel/speaker.
-        divide by the number of frames to get activity ratio.
-        If ratio is greater than or equal to the threshold_ratio
-        the bin is considered active
-        """
-        start = 0
-        v_bins = []
-        for b in self.bin_sizes:
-            end = start + b
-            m = vad_projections[..., start:end].sum(dim=-1) / b
-            m = (m >= self.threshold_ratio).float()
-            v_bins.append(m)
-            start = end
-        v_bins = torch.stack(v_bins, dim=-1)  # (*, t, c, n_bins)
-        # Treat the 2-channel activity as a single binary sequence
-        v_bins = v_bins.flatten(-2)  # (*, t, c, n_bins) -> (*, t, (c n_bins))
-        return rearrange(v_bins, "... (c d) -> ... c d", c=2)
-
-    def vad_projection(self, vad) -> torch.Tensor:
-        """
-        Given a sequence of binary VAD information (two channels) we extract a prediction horizon
-        (frame length = the sum of all bin_sizes).
-
-        ! WARNING ! VAD is shifted one step to get the 'next frame horizon'
-
-        ```python
-        # vad: (B, N, 2)
-        # DO THIS
-        vad_projection_oh = VadProjection.vad_to_idx(vad)
-        # vad_projection_oh: (B, N, 2, )
-        ```
-
-        Arguments:
-            vad:        torch.Tensor, (b, n, c) or (n, c)
-        """
-        # (b, n, c) -> (b, N, c, M), M=horizon window size, N=valid frames
-        # Shift to get next frame projections
-        vv = vad[..., 1:, :]
-        vad_projections = vv.unfold(dimension=-2, size=sum(self.bin_sizes), step=1)
-
-        # (b, N, c, M) -> (B, N, 2, len(self.bin_sizes))
-        v_bins = self.horizon_to_onehot(vad_projections)
-        return v_bins
-
-    def comparative_activity(self, vad):
-        """
-        Sum together the activity for each speaker in the `projection_window` and get the activity
-        ratio for each speaker (focused on speaker 0)
-        p(speaker_1) = 1 - p(speaker_0)
-        vad:        torch.tensor, (B, N, 2)
-        comp:       torch.tensor, (B, N)
-        """
-        vv = vad[..., 1:, :]
-        projection_windows = vv.unfold(dimension=-2, size=sum(self.bin_sizes), step=1)
-        comp = projection_windows.sum(dim=-1)  # sum all activity for speakers
-        tot = comp.sum(dim=-1) + 1e-9  # get total activity
-        # focus on speaker 0 and get ratio: p(speaker_1)= 1 - p(speaker_0)
-        comp = comp[..., 0] / tot
-        return comp
+def bin_times_to_frames(bin_times, frame_hz):
+    bt = torch.tensor(bin_times)
+    return (bt * frame_hz).long().tolist()
 
 
 class WindowHelper:
@@ -170,22 +139,122 @@ class WindowHelper:
         return vad
 
 
-class ProjectionCodebook(nn.Module):
+class VAPLabel(nn.Module):
+    def __init__(
+        self,
+        bin_times: List = [0.2, 0.4, 0.6, 0.8],
+        frame_hz: int = 100,
+        threshold_ratio: float = 0.5,
+    ):
+        super().__init__()
+        self.bin_times = bin_times
+        self.frame_hz = frame_hz
+        self.threshold_ratio = threshold_ratio
+
+        self.bin_frames = bin_times_to_frames(bin_times, frame_hz)
+        self.n_bins = len(self.bin_frames)
+        self.total_bins = self.n_bins * 2
+        self.horizon = sum(self.bin_frames)
+
+    def __repr__(self) -> str:
+        s = "VAPLabel(\n"
+        s += f"  bin_times: {self.bin_times}\n"
+        s += f"  bin_frames: {self.bin_frames}\n"
+        s += f"  frame_hz: {self.frame_hz}\n"
+        s += f"  thresh: {self.threshold_ratio}\n"
+        s += ")\n"
+        return s
+
+    def projection(self, va):
+        """
+        Extract projection (bins)
+        (b, n, c) -> (b, N, c, M), M=horizon window size, N=valid frames
+
+        Arguments:
+            va:         torch.Tensor (B, N, C)
+
+        Returns:
+            vaps:       torch.Tensor (B, m, C, M)
+
+        """
+        # Shift to get next frame projections
+        return va[..., 1:, :].unfold(dimension=-2, size=sum(self.bin_frames), step=1)
+
+    def vap_bins(self, projection_window):
+        """
+        Iterate over the bin boundaries and sum the activity
+        for each channel/speaker.
+        divide by the number of frames to get activity ratio.
+        If ratio is greater than or equal to the threshold_ratio
+        the bin is considered active
+        """
+
+        start = 0
+        v_bins = []
+        for b in self.bin_frames:
+            end = start + b
+            m = projection_window[..., start:end].sum(dim=-1) / b
+            m = (m >= self.threshold_ratio).float()
+            v_bins.append(m)
+            start = end
+        v_bins = torch.stack(v_bins, dim=-1)  # (*, t, c, n_bins)
+
+        # Treat the 2-channel activity as a single binary sequence
+        v_bins = v_bins.flatten(-2)  # (*, t, c, n_bins) -> (*, t, (c n_bins))
+        return rearrange(v_bins, "... (c d) -> ... c d", c=2)
+
+    def comparative(self, projection_window):
+        """
+        Sum together the activity for each speaker in the `projection_window` and get the activity
+        ratio for each speaker (focused on speaker 0)
+        p(speaker_1) = 1 - p(speaker_0)
+        vad:        torch.tensor, (B, N, 2)
+        comp:       torch.tensor, (B, N)
+        """
+        comp = projection_window.sum(dim=-1)  # sum all activity for speakers
+        tot = comp.sum(dim=-1) + 1e-9  # get total activity
+        # focus on speaker 0 and get ratio: p(speaker_1)= 1 - p(speaker_0)
+        comp = comp[..., 0] / tot
+        return comp
+
+    def __call__(
+        self, va: torch.Tensor, type: str = "binary"
+    ) -> Union[torch.Tensor, Tuple]:
+        vap_bins = None
+        vap_comp = None
+
+        projection_windows = self.projection(va)
+
+        if type == "binary":
+            return self.vap_bins(projection_windows)
+        elif type == "comparative":
+            return self.comparative(projection_windows)
+        else:
+            vap_bins = self.vap_bins(projection_windows)
+            vap_comp = self.comparative(projection_windows)
+            return vap_bins, vap_comp
+
+
+class ActivityEmb(nn.Module):
     def __init__(self, bin_times=[0.20, 0.40, 0.60, 0.80], frame_hz=100):
         super().__init__()
         self.frame_hz = frame_hz
-        self.bin_sizes = time_to_frames(bin_times, frame_hz)
-
-        self.n_bins = len(bin_times)
+        self.bin_frames = bin_times_to_frames(bin_times, frame_hz)
+        self.n_bins = len(self.bin_frames)
         self.total_bins = self.n_bins * 2
         self.n_classes = 2 ** self.total_bins
 
+        # Discrete indices
         self.codebook = self.init_codebook()
-        self.comp_silent, self.comp_active = self.init_comparative_classes()
-        self.on_silent_shift, self.on_silent_hold = self.init_on_silent_shift()
-        self.on_silent_next = self.on_silent_shift
-        self.on_active_shift, self.on_active_hold = self.init_on_activity_shift()
-        self.bc_prediction = self.init_bc_prediction()
+
+        # weighted by bin size (subset for active/silent is modified dependent on bin_frames)
+        wsil, wact = self.init_subset_weighted_by_bin_size()
+        self.subset_bin_weighted_silence = wsil
+        self.subset_bin_weighted_active = wact
+
+        self.subset_silence, self.subset_silence_hold = self.init_subset_silence()
+        self.subset_active, self.subset_active_hold = self.init_subset_active()
+        self.bc_prediction = self.init_subset_backchannel()
         self.requires_grad_(False)
 
     def init_codebook(self) -> nn.Module:
@@ -224,20 +293,7 @@ class ProjectionCodebook(nn.Module):
         codebook.weight.requires_grad_(False)
         return codebook
 
-    def _sort_idx(self, x):
-        if x.ndim == 1:
-            x, _ = x.sort()
-        elif x.ndim == 2:
-            if x.shape[0] == 2:
-                a, _ = x[0].sort()
-                b, _ = x[1].sort()
-                x = torch.stack((a, b))
-            else:
-                x, _ = x[0].sort()
-                x = x.unsqueeze(0)
-        return x
-
-    def init_comparative_classes(self):
+    def init_subset_weighted_by_bin_size(self):
         """
         Calculates the comparative probability between the activity in each window for each speaker.
 
@@ -259,16 +315,16 @@ class ProjectionCodebook(nn.Module):
         idx = torch.arange(self.n_classes)
 
         # normalize bin size weights -> adds to one
-        scale_bins = torch.tensor(self.bin_sizes, dtype=torch.float)
+        scale_bins = torch.tensor(self.bin_frames, dtype=torch.float)
         scale_bins /= scale_bins.sum()
 
         # scale the bins of the onehot-states
         oh = scale_bins * self.idx_to_onehot(idx)
-        comp_silent = oh_to_prob(oh)
-        comp_active = oh_to_prob(oh[..., 2:])
-        return comp_silent, comp_active
+        subset_silence = oh_to_prob(oh)
+        subset_active = oh_to_prob(oh[..., 2:])
+        return subset_silence, subset_active
 
-    def init_on_silent_shift(self):
+    def init_subset_silence(self):
         """
         During mutual silences we wish to infer which speaker the model deems most likely.
 
@@ -286,31 +342,31 @@ class ProjectionCodebook(nn.Module):
         # combine
         shift_oh = WindowHelper.combine_speakers(active, non_active, mirror=True)
         shift = self.onehot_to_idx(shift_oh)
-        shift = self._sort_idx(shift)
+        shift = sort_idx(shift)
 
         # symmetric, this is strictly unneccessary but done for convenience and to be similar
         # to 'get_on_activity_shift' where we actually have asymmetric classes for hold/shift
         hold = shift.flip(0)
         return shift, hold
 
-    def init_on_activity_shift(self):
+    def init_subset_active(self):
         """On activity"""
         # Shift subset
         eos = WindowHelper.end_of_segment_mono(self.n_bins, max=2)
         nav = WindowHelper.on_activity_change_mono(self.n_bins, min_active=2)
         shift_oh = WindowHelper.combine_speakers(nav, eos, mirror=True)
         shift = self.onehot_to_idx(shift_oh)
-        shift = self._sort_idx(shift)
+        shift = sort_idx(shift)
 
         # Don't shift subset
         eos = WindowHelper.on_activity_change_mono(self.n_bins, min_active=2)
         zero = torch.zeros((1, self.n_bins))
         hold_oh = WindowHelper.combine_speakers(zero, eos, mirror=True)
         hold = self.onehot_to_idx(hold_oh)
-        hold = self._sort_idx(hold)
+        hold = sort_idx(hold)
         return shift, hold
 
-    def init_bc_prediction(self, n=4):
+    def init_subset_backchannel(self, n=4):
         if n != 4:
             raise NotImplementedError("Not implemented for bin-size != 4")
 
@@ -358,7 +414,16 @@ class ProjectionCodebook(nn.Module):
         v = self.codebook(idx)
         return rearrange(v, "... (c b) -> ... c b", c=2)
 
-    def get_marginal_probs(self, probs, pos_idx, neg_idx):
+    def forward(self, projection_window):
+        return self.onehot_to_idx(projection_window)
+
+
+class Probabilites:
+    def _normalize_reg_probs(self, probs):
+        probs = probs.sum(dim=-1)  # sum all bins for each speaker
+        return probs / probs.sum(dim=-1, keepdim=True)  # norm
+
+    def _marginal_probs(self, probs, pos_idx, neg_idx):
         p = []
         for next_speaker in [0, 1]:
             joint = torch.cat((pos_idx[next_speaker], neg_idx[next_speaker]), dim=-1)
@@ -366,366 +431,183 @@ class ProjectionCodebook(nn.Module):
             p.append(probs[..., pos_idx[next_speaker]].sum(dim=-1) / p_sum)
         return torch.stack(p, dim=-1)
 
-    def next_speaker_probs(self, probs, silence=False):
-        if silence:
-            return self.get_marginal_probs(
-                probs, self.on_silent_shift, self.on_silent_hold
-            )
-        else:
-            return self.get_marginal_probs(
-                probs, self.on_active_shift, self.on_active_hold
-            )
-
-    def get_next_speaker_probs(self, logits=None, vad=None, probs=None, pw=False):
-        """
-        Extracts the probabilities for who the next speaker is dependent on what the current moment is.
-
-        This means that on mutual silences we use the 'silence'-subset,
-        where a single speaker is active we use the 'active'-subset and where on overlaps
-        """
-
-        if probs is None:
-            probs = logits.softmax(dim=-1)
-
-        sil_probs = self.next_speaker_probs(probs, silence=True)
-        act_probs = self.next_speaker_probs(probs, silence=False)
-        # sil_probs = self.get_silence_shift_probs(probs)
-        # act_probs = self.get_active_shift_probs(probs)
-
-        # Start wit all zeros
-        # p_a: probability of A being next speaker (channel: 0)
-        # p_b: probability of B being next speaker (channel: 1)
-        p_a = torch.zeros_like(sil_probs[..., 0])
-        p_b = torch.zeros_like(sil_probs[..., 0])
-
-        pw_a = None
-        pw_b = None
-
-        # dialog states
-        ds = vad_to_dialog_vad_states(vad)
-        silence = ds == 1
-        a_current = ds == 0
-        b_current = ds == 3
-        both = ds == 2
-
-        # silence
+    def _silence_probs(self, p_a, p_b, sil_probs, silence):
         w = torch.where(silence)
         p_a[w] = sil_probs[w][..., 0]
         p_b[w] = sil_probs[w][..., 1]
+        return p_a, p_b
 
-        if pw:
-            pw_a = torch.zeros_like(sil_probs[..., 0])
-            pw_b = torch.zeros_like(sil_probs[..., 0])
+    def _single_speaker_probs(self, p0, p1, act_probs, current, other_speaker):
+        w = torch.where(current)
+        p0[w] = 1 - act_probs[w][..., other_speaker]  # P_a = 1-P_b
+        p1[w] = act_probs[w][..., other_speaker]  # P_b
+        return p0, p1
 
-            # comparative silent
-            comp_sil = probs.unsqueeze(-1) * self.comp_silent.unsqueeze(0).to(
-                probs.device
-            )
-            comp_sil = comp_sil.sum(dim=-2)  # sum over classes
-
-            # comparative active
-            comp_act = probs.unsqueeze(-1) * self.comp_active.unsqueeze(0).to(
-                probs.device
-            )
-            comp_act = comp_act.sum(dim=-2)  # sum over classes
-
-            pw_a[w] = comp_sil[w][..., 0]
-            pw_b[w] = comp_sil[w][..., 1]
-
-        # A current speaker
-        # Given only A is speaking we use the 'active' probability of B being the next speaker
-        w = torch.where(a_current)
-        p_a[w] = 1 - act_probs[w][..., 1]  # P_a = 1-P_b
-        p_b[w] = act_probs[w][..., 1]  # P_b
-        if pw:
-            pw_a[w] = 1 - comp_act[w][..., 1]
-            pw_b[w] = comp_act[w][..., 1]
-
-        # B current speaker
-        w = torch.where(b_current)
-        p_a[w] = act_probs[w][..., 0]  # P_a for A being next speaker, while B is active
-        p_b[w] = 1 - act_probs[w][..., 0]  # P_b = 1-P_a
-        if pw:
-            pw_a[w] = comp_act[w][..., 0]
-            pw_b[w] = 1 - comp_act[w][..., 0]
-
-        # Both
-        # P_a_prior=A is next (active)
-        # P_b_prior=B is next (active)
-        # We the compare/renormalize given the two values of A/B is the next speaker
-        # sum = P_a_prior+P_b_prior
-        # P_a = P_a_prior / sum
-        # P_b = P_b_prior / sum
+    def _overlap_probs(self, p_a, p_b, act_probs, both):
+        """
+        P_a_prior=A is next (active)
+        P_b_prior=B is next (active)
+        We the compare/renormalize given the two values of A/B is the next speaker
+        sum = P_a_prior+P_b_prior
+        P_a = P_a_prior / sum
+        P_b = P_b_prior / sum
+        """
         w = torch.where(both)
         # Re-Normalize and compare next-active
         sum = act_probs[w][..., 0] + act_probs[w][..., 1]
 
         p_a[w] = act_probs[w][..., 0] / sum
         p_b[w] = act_probs[w][..., 1] / sum
+        return p_a, p_b
 
-        pw_probs = None
-        if pw:
-            sum = comp_act[w][..., 0] + comp_act[w][..., 1]
-            pw_a[w] = comp_act[w][..., 0] / sum
-            pw_b[w] = 1 - comp_act[w][..., 1] / sum
 
-            pw_probs = torch.stack((pw_a, pw_b), dim=-1)
-        p_probs = torch.stack((p_a, p_b), dim=-1)
-        return p_probs, pw_probs
+class VAP(nn.Module, Probabilites):
+    TYPES = ["discrete", "independent", "comparative"]
 
-    def get_probs(self, logits, vad):
-        probs = logits.softmax(dim=-1)
-        next_probs, next_pw_probs = self.get_next_speaker_probs(
-            probs=probs, vad=vad, pw=True
+    def __init__(
+        self,
+        type="discrete",
+        bin_times=[0.20, 0.40, 0.60, 0.80],
+        frame_hz=100,
+        threshold_ratio=0.5,
+    ):
+        super().__init__()
+        assert type in VAP.TYPES, "{type} is not a valid type! {VAP.TYPES}"
+
+        self.type = type
+        self.frame_hz = frame_hz
+        self.bin_times = bin_times
+        self.emb = ActivityEmb(bin_times, frame_hz)
+        self.vap_label = VAPLabel(bin_times, frame_hz, threshold_ratio)
+
+    def __repr__(self):
+        s = super().__repr__().split("\n")
+        s.insert(1, f"  type: {self.type}")
+        s = "\n".join(s)
+        return s
+
+    def _probs_on_silence(self, probs):
+        return self._marginal_probs(
+            probs, self.emb.subset_silence, self.emb.subset_silence_hold
         )
 
-        # Prediction
-        ap = probs[..., self.bc_prediction[0]].sum(-1)
-        bp = probs[..., self.bc_prediction[1]].sum(-1)
-        bc_prediction = torch.stack((ap, bp), dim=-1)
-        return {"p": next_probs, "pw": next_pw_probs, "bc_prediction": bc_prediction}
+    def _probs_on_active(self, probs):
+        return self._marginal_probs(
+            probs, self.emb.subset_active, self.emb.subset_active_hold
+        )
 
-    def speaker_prob_to_shift(self, probs, vad):
+    def _probs_ind_on_silence(self, probs):
+        return self._normalize_reg_probs(probs)
+
+    def _probs_ind_on_active(self, probs):
+        return self._normalize_reg_probs(probs[..., :, self.pre_frames :])
+
+    def _probs_weighted_on_silence(self, probs):
+        sil_probs = probs.unsqueeze(
+            -1
+        ) * self.emb.subset_bin_weighted_silence.unsqueeze(0).to(probs.device)
+        return sil_probs.sum(dim=-2)  # sum over classes
+
+    def _probs_weighted_on_active(self, probs):
+        # comparative active
+        act_probs = probs.unsqueeze(-1) * self.emb.subset_bin_weighted_active.unsqueeze(
+            0
+        ).to(probs.device)
+        return act_probs.sum(dim=-2)  # sum over classes
+
+    def probs_backchannel(self, probs):
+        ap = probs[..., self.emb.bc_prediction[0]].sum(-1)
+        bp = probs[..., self.emb.bc_prediction[1]].sum(-1)
+        return torch.stack((ap, bp), dim=-1)
+
+    def probs_next_speaker(self, probs, va, type):
         """
-        next speaker probabilities (B, N, 2) -> turn-shift probabilities (B, n)
+        Extracts the probabilities for who the next speaker is dependent on what the current moment is.
+
+        This means that on mutual silences we use the 'silence'-subset,
+        where a single speaker is active we use the 'active'-subset and where on overlaps
         """
-        assert probs.ndim == 3, "Assumes probs.shape = (B, N, 2)"
+        if type == "independent":
+            sil_probs = self._probs_ind_on_silence(probs)
+            act_probs = self._probs_ind_on_active(probs)
+        elif type == "weighted":
+            sil_probs = self._probs_weighted_on_silence(probs)
+            act_probs = self._probs_weighted_on_active(probs)
+        else:  # discrete
+            sil_probs = self._probs_on_silence(probs)
+            act_probs = self._probs_on_active(probs)
 
-        shift_probs = torch.zeros(probs.shape[:-1])
-
-        # dialog states
-        ds = vad_to_dialog_vad_states(vad)
-        silence = ds == 1
-        a_current = ds == 0
-        b_current = ds == 3
-        prev_speaker = get_last_speaker(vad, ds)
-
-        # A active -> B = 1 is next_speaker
-        w = torch.where(a_current)
-        shift_probs[w] = probs[w][..., 1]
-        # B active -> A = 0 is next_speaker
-        w = torch.where(b_current)
-        shift_probs[w] = probs[w][..., 0]
-        # silence and A was previous speaker -> B = 1 is next_speaker
-        w = torch.where(torch.logical_and(silence, prev_speaker == 0))
-        shift_probs[w] = probs[w][..., 1]
-        # silence and B was previous speaker -> A = 0 is next_speaker
-        w = torch.where(torch.logical_and(silence, prev_speaker == 1))
-        shift_probs[w] = probs[w][..., 0]
-        return shift_probs
-
-    def forward(self, projection_window):
-        # return self.idx_to_onehot(idx)
-        return self.onehot_to_idx(projection_window)
-
-
-class ProjectionIndependent:
-    def __init__(self, pre_frames=2, bin_times=[0.20, 0.40, 0.60, 0.80], frame_hz=100):
-        super().__init__()
-        self.pre_frames = pre_frames
-        self.bin_times = bin_times
-        self.frame_hz = frame_hz
-
-    def _normalize_reg_probs(self, probs):
-        probs = probs.sum(dim=-1)  # sum all bins for each speaker
-        return probs / probs.sum(dim=-1, keepdim=True)  # norm
-
-    def backchannel_prediction_probs(self, probs):
-        """
-
-        Extract the probabilities associated with
-
-        A:   |-|-|-|_|
-        B:   |.|.|.|-|
-
-        """
-        bc_pred = []
-
-        # Iterate over speakers
-        for current_speaker, backchanneler in zip([1, 0], [0, 1]):
-            # Between speaker diff
-            # --------------------
-            # Is the last bin of the "backchanneler" less probable than last bin of current speaker?
-            last_a_lt_b = (
-                probs[..., backchanneler, -1] < probs[..., current_speaker, -1]
-            )
-
-            # Within speaker diff
-            # --------------------
-            # Is the start/middle bins of the "backchanneler" greater than the last bin?
-            # I.e. does it predict an ending response?
-            mid_a_max, _ = probs[..., backchanneler, :-1].max(
-                dim=-1
-            )  # get prob (used with threshold)
-            mid_a_gt_last = (
-                mid_a_max > probs[..., backchanneler, -1]
-            )  # find where the condition is true
-
-            # Combine the between/within conditions
-            non_zero_probs = torch.logical_and(last_a_lt_b, mid_a_gt_last)
-
-            # Create probability tensor
-            # P=0 where conditions are not met
-            # P=max activation where condition is True
-            tmp_pred_probs = torch.zeros_like(mid_a_max)
-            tmp_pred_probs[non_zero_probs] = mid_a_max[non_zero_probs]
-            bc_pred.append(tmp_pred_probs)
-
-        bc_pred = torch.stack(bc_pred, dim=-1)
-        return bc_pred
-
-    def organize_next_speker_probs(self, sil_probs, act_probs, vad):
-        """
-        Organize probabilities condition on the current vad-dialog-state
-        * 0 -> only A
-        * 1 -> silence
-        * 2 -> both active
-        * 3 -> only B
-
-        """
         # Start wit all zeros
         # p_a: probability of A being next speaker (channel: 0)
         # p_b: probability of B being next speaker (channel: 1)
-        p_a = torch.zeros_like(sil_probs[..., 0])
-        p_b = torch.zeros_like(sil_probs[..., 0])
+        p_a = torch.zeros_like(va[..., 0])
+        p_b = torch.zeros_like(va[..., 0])
 
         # dialog states
-        ds = vad_to_dialog_vad_states(vad)
+        ds = vad_to_dialog_vad_states(va)
         silence = ds == 1
         a_current = ds == 0
         b_current = ds == 3
         both = ds == 2
 
-        ##########################################
         # silence
-        w = torch.where(silence)
-        p_a[w] = sil_probs[w][..., 0]
-        p_b[w] = sil_probs[w][..., 1]
+        p_a, p_b = self._silence_probs(p_a, p_b, sil_probs, silence)
 
-        ##########################################
         # A current speaker
         # Given only A is speaking we use the 'active' probability of B being the next speaker
-        w = torch.where(a_current)
-        p_a[w] = 1 - act_probs[w][..., 1]  # P_a = 1-P_b
-        p_b[w] = act_probs[w][..., 1]  # P_b
+        p_a, p_b = self._single_speaker_probs(
+            p_a, p_b, act_probs, a_current, other_speaker=1
+        )
 
-        ##########################################
         # B current speaker
-        w = torch.where(b_current)
-        p_a[w] = act_probs[w][..., 0]  # P_a for A being next speaker, while B is active
-        p_b[w] = 1 - act_probs[w][..., 0]  # P_b = 1-P_a
+        # Given only B is speaking we use the 'active' probability of A being the next speaker
+        p_b, p_a = self._single_speaker_probs(
+            p_b, p_a, act_probs, b_current, other_speaker=0
+        )
 
-        ##########################################
         # Both
-        # P_a_prior=A is next (active)
-        # P_b_prior=B is next (active)
-        # We the compare/renormalize given the two values of A/B is the next speaker
-        # sum = P_a_prior+P_b_prior
-        # P_a = P_a_prior / sum
-        # P_b = P_b_prior / sum
-        w = torch.where(both)
-        sum = act_probs[w][..., 0] + act_probs[w][..., 1]
-        p_a[w] = act_probs[w][..., 0] / sum
-        p_b[w] = act_probs[w][..., 1] / sum
+        p_a, p_b = self._overlap_probs(p_a, p_b, act_probs, both)
 
-        return torch.stack((p_a, p_b), dim=-1)
+        p_probs = torch.stack((p_a, p_b), dim=-1)
+        return p_probs
 
-    def get_probs(self, logits, vad=None):
-        # Compare chosen subset of next-speaker-activity
-        probs = logits.sigmoid()
-        next_probs = self._normalize_reg_probs(probs)
-        p_on_active = self._normalize_reg_probs(probs[..., :, self.pre_frames :])
-        p_ns = self.organize_next_speker_probs(next_probs, p_on_active, vad)
-        bc_prediction = self.backchannel_prediction_probs(probs)
-        return {"p": p_ns, "p_on_active": p_on_active, "bc_prediction": bc_prediction}
+    def extract_label(self, va):
+        if self.type == "comparative":
+            return self.vap_label(va, type="comparative")
 
-    def __call__(self, logits, vad=None):
-        return self.get_probs(logits, vad)
+        vap_bins = self.vap_label(va, type="binary")
+
+        if self.type == "independent":
+            return vap_bins
+
+        return self.emb(vap_bins)  # discrete
+
+    def forward(self, logits, va):
+        """
+        Probabilites for events dependent on VAP-embedding and VA.
+        """
+
+        probs = logits.softmax(dim=-1)
+        p = self.probs_next_speaker(probs=probs, va=va, type=self.type)
+
+        # Next speaker probs
+        if self.type == "discrete":
+            p_bc = self.probs_backchannel(probs)
+        elif self.type == "independent":
+            # Backchannel probs (dependent on embedding and VA)
+            p_bc = probs_ind_backchannel(probs)
+        else:
+            p_bc = None
+
+        return {"p": p, "bc_prediction": p_bc}
 
 
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-    from vap_turn_taking.plot_utils import plot_all_projection_windows, plot_template
-    from vap_turn_taking.events import TurnTakingEvents
-    from conv_ssl.evaluation.utils import load_dm
+    from vap_turn_taking.config.example_data import example, event_conf
 
-    dm = load_dm()
-    diter = iter(dm.val_dataloader())
-
-    bin_times = [0.2, 0.4, 0.6, 0.8]
-    vad_hz = 100
-    event_kwargs = {
-        "event_pre": 0.5,
-        "event_min_context": 1.0,
-        "event_min_duration": 0.15,
-        "event_horizon": 2.0,
-        "event_start_pad": 0.05,
-        "event_target_duration": 0.10,
-        "event_bc_pre_silence": 1,
-        "event_bc_post_silence": 2,
-        "event_bc_max_active": 1,
-        "event_bc_prediction_window": 0.5,
-    }
-    codebook = ProjectionCodebook(bin_times=bin_times)
-    labeler = VadLabel(bin_times=bin_times, vad_hz=vad_hz)
-    eventer = TurnTakingEvents(
-        shift_onset_cond=1,
-        shift_offset_cond=1,
-        hold_onset_cond=1,
-        hold_offset_cond=1,
-        min_silence=0.15,
-        non_shift_horizon=2.0,
-        non_shift_majority_ratio=0.95,
-        metric_pad=0.05,
-        metric_dur=0.1,
-        metric_onset_dur=0.3,
-        metric_pre_label_dur=0.5,
-        metric_min_context=1.0,
-        bc_max_duration=1.0,
-        bc_pre_silence=1.0,
-        bc_post_silence=1.0,
-        min_context=0,
-        frame_hz=vad_hz,
-    )
-    print("bc: ", codebook.bc_prediction.shape)
-    print("shift silent: ", codebook.on_silent_shift.shape)
-    print("shift active: ", codebook.on_active_shift.shape)
-    print("comp silent: ", codebook.comp_silent.shape)
-    print("comp active: ", codebook.comp_active.shape)
-
-    shift_silence = codebook.idx_to_onehot(codebook.on_silent_shift[0])
-    _ = plot_all_projection_windows(shift_silence)
-
-    shift_active = codebook.idx_to_onehot(codebook.on_active_shift[0])
-    _ = plot_all_projection_windows(shift_active)
-
-    hold_active = codebook.idx_to_onehot(codebook.on_active_hold[0])
-    _ = plot_all_projection_windows(hold_active)
-
-    bc_pred_states = codebook.idx_to_onehot(codebook.bc_prediction[0])
-    _ = plot_all_projection_windows(bc_pred_states)
-
-    # Template figures
-    # BC-Prediction
-    fig, ax = plot_template(
-        projection_type="bc_prediction", prefix_type="both", lw_box=4, legend_ts=15
-    )
-    plt.show()
-
-    fig, ax = plot_template(
-        projection_type="bc_prediction", prefix_type="overlap", lw_box=4, legend_ts=15
-    )
-    plt.show()
-
-    # fig, ax = plot_template(projection_type="bc_prediction", prefix_type="active")
-
-    # FFC966
-    # Turn-shift / BC-Ongoing
-    # fig, ax = plot_template(projection_type="shift", prefix_type="silence", lw_box=4, legend_ts=15)
-    fig, ax = plot_template(
-        projection_type="shift", prefix_type="active", lw_box=4, legend_ts=15
-    )
-    plt.show()
-
-    # fig, ax = plot_template(projection_type="shift", prefix_type="overlap")
-    # plt.pause(0.01)
+    vapper = VAP(type="comparative")
+    va = example["va"]
+    y = vapper.extract_label(va)
+    print("va: ", tuple(va.shape))
+    print("y: ", tuple(y.shape))
+    vapper
