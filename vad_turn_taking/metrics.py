@@ -752,7 +752,7 @@ class TurnTakingMetrics(Metric):
             labels.append(torch.ones_like(p_short))
 
         # At the onset of a LONG utterance the probability associated
-        # with that person being the next speaker should be high -> 1
+        # with SHORT should be low -> 0
         if long.sum() > 0:
             w = torch.where(long)
             p_long = p[w]
