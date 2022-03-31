@@ -2,8 +2,13 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from vap_turn_taking.utils import time_to_frames
-from vap_turn_taking.vad import VAD
+from vap_turn_taking.utils import (
+    time_to_frames,
+    vad_to_dialog_vad_states,
+    get_last_speaker,
+)
+
+# from vap_turn_taking.va import
 
 
 def add_start_end(x, val=[0], start=True):
@@ -397,7 +402,7 @@ class ProjectionCodebook(nn.Module):
         pw_b = None
 
         # dialog states
-        ds = VAD.vad_to_dialog_vad_states(vad)
+        ds = vad_to_dialog_vad_states(vad)
         silence = ds == 1
         a_current = ds == 0
         b_current = ds == 3
@@ -489,11 +494,11 @@ class ProjectionCodebook(nn.Module):
         shift_probs = torch.zeros(probs.shape[:-1])
 
         # dialog states
-        ds = VAD.vad_to_dialog_vad_states(vad)
+        ds = vad_to_dialog_vad_states(vad)
         silence = ds == 1
         a_current = ds == 0
         b_current = ds == 3
-        prev_speaker = VAD.get_last_speaker(vad)
+        prev_speaker = get_last_speaker(vad, ds)
 
         # A active -> B = 1 is next_speaker
         w = torch.where(a_current)
@@ -585,7 +590,7 @@ class ProjectionIndependent:
         p_b = torch.zeros_like(sil_probs[..., 0])
 
         # dialog states
-        ds = VAD.vad_to_dialog_vad_states(vad)
+        ds = vad_to_dialog_vad_states(vad)
         silence = ds == 1
         a_current = ds == 0
         b_current = ds == 3
@@ -636,30 +641,6 @@ class ProjectionIndependent:
 
     def __call__(self, logits, vad=None):
         return self.get_probs(logits, vad)
-
-
-def time_label_making():
-    import time
-
-    vad = torch.randint(0, 2, (128, 1000, 2))
-
-    FRAME_HZ = 100
-
-    VL = VadLabel(bin_times=[0.2, 0.4, 0.6, 0.8], vad_hz=FRAME_HZ)
-    # Time label making
-    t = time.time()
-    for i in range(10):
-        lab_oh = VL.vad_projection(vad)
-    t = time.time() - t
-    print("bin_times: ", len(VL.bin_times), " took: ", round(t, 4), "seconds")
-
-    VL = VadLabel(bin_times=[0.05] * 60, vad_hz=FRAME_HZ)
-    # Time label making
-    t = time.time()
-    for i in range(10):
-        lab_oh = VL.vad_projection(vad)
-    t = time.time() - t
-    print("bin_times: ", len(VL.bin_times), " took: ", round(t, 4), "seconds")
 
 
 if __name__ == "__main__":

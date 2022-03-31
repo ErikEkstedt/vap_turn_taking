@@ -1,5 +1,4 @@
-from .vad import VAD, DialogEvents
-from .vap import VadLabel, ProjectionCodebook
+from .vap import VadLabel, ProjectionCodebook, ProjectionIndependent
 from .hold_shifts import HoldShift
 from .backchannel import Backchannel
 from .events import TurnTakingEvents
