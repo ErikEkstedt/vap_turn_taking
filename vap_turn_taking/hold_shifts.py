@@ -1,168 +1,113 @@
 import torch
-
-from vap_turn_taking.utils import find_island_idx_len
-
-
-def get_dialog_states(vad) -> torch.Tensor:
-    """Vad to the full state of a 2 person vad dialog
-    0: only speaker 0
-    1: none
-    2: both
-    3: only speaker 1
-    """
-    assert vad.ndim >= 1
-    return (2 * vad[..., 1] - vad[..., 0]).long() + 1
-
-
-def last_speaker_single(s):
-    start, _, val = find_island_idx_len(s)
-
-    # exlude silences (does not effect last_speaker)
-    # silences should be the value of the previous speaker
-    sil_idx = torch.where(val == 1)[0]
-    if len(sil_idx) > 0:
-        if sil_idx[0] == 0:
-            val[0] = 2  # 2 is both we don't know if its a shift or hold
-            sil_idx = sil_idx[1:]
-        val[sil_idx] = val[sil_idx - 1]
-    # map speaker B state (=3) to 1
-    val[val == 3] = 1
-    # get repetition lengths
-    repeat = start[1:] - start[:-1]
-    # Find difference between original and repeated
-    # and use diff to repeat the last speaker until the end of segment
-    diff = len(s) - repeat.sum(0)
-    repeat = torch.cat((repeat, diff.unsqueeze(0)))
-    # repeat values to create last speaker over entire segment
-    last_speaker = torch.repeat_interleave(val, repeat)
-    return last_speaker
-
-
-def get_last_speaker(vad, ds):
-    assert vad.ndim > 1, "must provide vad of size: (N, channels) or (B, N, channels)"
-
-    # get last active speaker (for turn shift/hold)
-    if vad.ndim < 3:
-        last_speaker = last_speaker_single(ds)
-    else:  # (B, N, Channels) = (B, N, n_speakers)
-        last_speaker = []
-        for b in range(vad.shape[0]):
-            s = ds[b]
-            last_speaker.append(last_speaker_single(s))
-        last_speaker = torch.stack(last_speaker)
-    return last_speaker
+from vap_turn_taking.utils import (
+    find_island_idx_len,
+    get_dialog_states,
+    get_last_speaker,
+)
 
 
 class HoldShift:
     """
     Hold/Shift extraction from VAD. Operates of Frames.
 
-    Arguments:
-        shift_onset_cond:           int, frames for shift onset cond
-        shift_offset_cond:          int, frames for shift offset cond
-        hold_onset_cond:            int, frames for hold onset cond
-        hold_offset_cond:           int, frames for hold offset cond
-        min_silence:                int, frames defining the minimimum amount of silence for Hold/Shift
-        metric_pad:                 int, pad on silence (shift/hold) onset used for evaluating
-        metric_dur:                 int, duration off silence (shift/hold) used for evaluating
-        pre_label_frames:           int, frames prior to Shift-silence for prediction on-active shift
-        non_shift_horizon:          int, frames to define majority speaker window for Non-shift
-        non_shift_majority_ratio:   float, ratio of majority speaker
+        Arguments:
+            post_onset_shift:           int, frames for shift onset cond
+            pre_offset_shift:           int, frames for shift offset cond
+            post_onset_hold:            int, frames for hold onset cond
+            pre_offset_hold:            int, frames for hold offset cond
+            metric_pad:                 int, pad on silence (shift/hold) onset used for evaluating
+            metric_dur:                 int, duration off silence (shift/hold) used for evaluating
+            metric_pre_label_dur:       int, frames prior to Shift-silence for prediction on-active shift
+            non_shift_horizon:          int, frames to define majority speaker window for Non-shift
+            non_shift_majority_ratio:   float, ratio of majority speaker
 
-    Return:
-        dict:       {'shift', 'pre_shift', 'hold', 'pre_hold', 'non_shift'}
+        Return:
+            dict:       {'shift', 'pre_shift', 'hold', 'pre_hold', 'non_shift'}
 
-    Active: "---"
-    Silent: "..."
+        Active: "---"
+        Silent: "..."
 
-    # SHIFTS
+        # SHIFTS
 
-    onset:                                 |<-- only A -->|
-    A:          ...........................|-------------------
-    B:          ----------------|..............................
-    offset:     |<--  only B -->|
-    SHIFT:                      |XXXXXXXXXX|
+        onset:                                 |<-- only A -->|
+        A:          ...........................|-------------------
+        B:          ----------------|..............................
+        offset:     |<--  only B -->|
+        SHIFT:                      |XXXXXXXXXX|
 
-    -----------------------------------------------------------
-    # HOLDS
+        -----------------------------------------------------------
+        # HOLDS
 
-    onset:                                 |<-- only B -->|
-    A:          ...............................................
-    B:          ----------------|..........|-------------------
-    offset:     |<--  only B -->|
-    HOLD:                       |XXXXXXXXXX|
+        onset:                                 |<-- only B -->|
+        A:          ...............................................
+        B:          ----------------|..........|-------------------
+        offset:     |<--  only B -->|
+        HOLD:                       |XXXXXXXXXX|
 
-    -----------------------------------------------------------
-    # NON-SHIFT
+        -----------------------------------------------------------
+        # NON-SHIFT
 
-    Horizon:                        |<-- B majority -->|
-    A:          .....................................|---------
-    B:          ----------------|......|------|................
-    non_shift:  |XXXXXXXXXXXXXXXXXXX|
+        Horizon:                        |<-- B majority -->|
+        A:          .....................................|---------
+        B:          ----------------|......|------|................
+        non_shift:  |XXXXXXXXXXXXXXXXXXX|
 
-    A future horizon window must contain 'majority' activity from
-    from the last speaker. In these moments we "know" a shift
-    is a WRONG prediction. But closer to activity from the 'other'
-    speaker, a turn-shift is appropriate.
+        A future horizon window must contain 'majority' activity from
+        from the last speaker. In these moments we "know" a shift
+        is a WRONG prediction. But closer to activity from the 'other'
+        speaker, a turn-shift is appropriate.
 
-    -----------------------------------------------------------
-    # metrics
-    e.g. shift
+        -----------------------------------------------------------
+        # metrics
+        e.g. shift
 
-    onset:                                     |<-- only A -->|
-    A:          ...............................|---------------
-    B:          ----------------|..............................
-    offset:     |<--  only B -->|
-    SHIFT:                      |XXXXXXXXXXXXXX|
-    metric:                     |...|XXXXXX|
-    metric:                     |pad|  dur |
+        onset:                                     |<-- only A -->|
+        A:          ...............................|---------------
+        B:          ----------------|..............................
+        offset:     |<--  only B -->|
+        SHIFT:                      |XXXXXXXXXXXXXX|
+        metric:                     |...|XXXXXX|
+        metric:                     |pad|  dur |
 
-    -----------------------------------------------------------
+        -----------------------------------------------------------
 
 
-    Using 'dialog states' consisting of 4 different states
-    0. Only A is speaking
-    1. Silence
-    2. Overlap
-    3. Only B is speaking
+        Using 'dialog states' consisting of 4 different states
+        0. Only A is speaking
+        1. Silence
+        2. Overlap
+        3. Only B is speaking
 
-    Shift GAP:       0 -> 1 -> 3          3 -> 1 -> 0
-    Shift Overlap:   0 -> 2 -> 3          3 -> 2 -> 0
-    HOLD:            0 -> 1 -> 0          3 -> 1 -> 3
+        Shift GAP:       0 -> 1 -> 3          3 -> 1 -> 0
+        Shift Overlap:   0 -> 2 -> 3          3 -> 2 -> 0
+        HOLD:            0 -> 1 -> 0          3 -> 1 -> 3
     """
 
     def __init__(
         self,
-        shift_onset_cond,
-        shift_offset_cond,
-        hold_onset_cond,
-        hold_offset_cond,
-        min_silence,
+        post_onset_shift,
+        pre_offset_shift,
+        post_onset_hold,
+        pre_offset_hold,
+        non_shift_horizon,
         metric_pad,
         metric_dur,
         metric_pre_label_dur,
         metric_onset_dur,
-        non_shift_horizon,
-        non_shift_majority_ratio,
+        non_shift_majority_ratio=1,
     ):
-
         assert (
-            metric_pad + metric_dur
-        ) <= min_silence, (
-            "the sum of `metric_pad` and `metric_dur` must be less than `min_silence`"
-        )
+            metric_onset_dur <= post_onset_shift
+        ), "`metric_onset_dur` must be less or equal to `post_onset_shift`"
 
-        assert (
-            metric_onset_dur <= shift_onset_cond
-        ), "`metric_onset_dur` must be less or equal to `shift_onset_cond`"
-        self.shift_onset_cond = shift_onset_cond
-        self.shift_offset_cond = shift_offset_cond
-        self.hold_onset_cond = hold_onset_cond
-        self.hold_offset_cond = hold_offset_cond
+        self.post_onset_shift = post_onset_shift
+        self.pre_offset_shift = pre_offset_shift
+        self.post_onset_hold = post_onset_hold
+        self.pre_offset_hold = pre_offset_hold
 
-        self.min_silence = min_silence
         self.metric_pad = metric_pad
         self.metric_dur = metric_dur
+        self.min_silence = metric_pad + metric_dur
         self.metric_pre_label_dur = metric_pre_label_dur
         self.metric_onset_dur = metric_onset_dur
 
@@ -176,10 +121,10 @@ class HoldShift:
 
     def __repr__(self):
         s = "Holds & Shifts"
-        s += f"\n  shift_onset_cond: {self.shift_onset_cond}"
-        s += f"\n  shift_offset_cond: {self.shift_offset_cond}"
-        s += f"\n  hold_onset_cond: {self.hold_onset_cond}"
-        s += f"\n  hold_offset_cond: {self.hold_offset_cond}"
+        s += f"\n  post_onset_shift: {self.post_onset_shift}"
+        s += f"\n  pre_offset_shift: {self.pre_offset_shift}"
+        s += f"\n  post_onset_hold: {self.post_onset_hold}"
+        s += f"\n  pre_offset_hold: {self.pre_offset_hold}"
         s += f"\n  min_silence: {self.min_silence}"
         s += f"\n  metric_pad: {self.metric_pad}"
         s += f"\n  metric_dur: {self.metric_dur}"
@@ -333,7 +278,8 @@ class HoldShift:
                         b, s[cur] - self.metric_pre_label_dur : s[cur], ns
                     ] = 1.0
 
-                end = s[cur] + self.metric_pad + d[cur]
+                # end = s[cur] + self.metric_pad + d[cur]
+                end = s[cur] + self.metric_pad + self.metric_dur
                 # Max frame condition:
                 # Can't have event outside of predictable window
                 if max_frame is not None:
@@ -374,9 +320,13 @@ class HoldShift:
 
         EPS = 1e-5  # used to avoid nans
 
+        nb = vad.size(0)
+
         # future windows
         vv = vad[:, 1:].unfold(1, size=horizon, step=1).sum(dim=-1)
         vv = vv / (vv.sum(-1, keepdim=True) + EPS)
+
+        diff = vad.shape[1] - vv.shape[1]
 
         if max_frame is not None:
             vv = vv[:, :max_frame]
@@ -390,7 +340,10 @@ class HoldShift:
         b_last = last_speaker[:, : maj_speaker_cond.shape[1]] == 1
         a_non_shift = torch.logical_and(a_last, maj_speaker_cond[..., 0])
         b_non_shift = torch.logical_and(b_last, maj_speaker_cond[..., 1])
-        non_shift = torch.stack((a_non_shift, b_non_shift), dim=-1).float()
+        ns = torch.stack((a_non_shift, b_non_shift), dim=-1).float()
+        # fill to correct size (same as vad and all other events)
+        z = torch.zeros(nb, diff, 2)
+        non_shift = torch.cat((ns, z), dim=1)
 
         # Min Context Condition
         # i.e. don't use negatives from before `min_context`
@@ -398,7 +351,16 @@ class HoldShift:
             non_shift[:, :min_context] = 0.0
         return non_shift
 
-    def __call__(self, vad, ds=None, filled_vad=None, max_frame=1000, min_context=0):
+    def __call__(
+        self,
+        vad,
+        ds=None,
+        filled_vad=None,
+        max_frame=None,
+        min_context=0,
+        return_list=False,
+    ):
+
         if ds is None:
             ds = get_dialog_states(vad)
 
@@ -414,8 +376,8 @@ class HoldShift:
             filled_vad,
             ds,
             self.shift_template,
-            pre_cond_frames=self.shift_offset_cond,
-            post_cond_frames=self.shift_onset_cond,
+            pre_cond_frames=self.pre_offset_shift,
+            post_cond_frames=self.post_onset_shift,
             pre_match=True,
             onset_match=True,
             max_frame=max_frame,
@@ -425,8 +387,8 @@ class HoldShift:
             filled_vad,
             ds,
             self.shift_overlap_template,
-            pre_cond_frames=self.shift_offset_cond,
-            post_cond_frames=self.shift_onset_cond,
+            pre_cond_frames=self.pre_offset_shift,
+            post_cond_frames=self.post_onset_shift,
             pre_match=False,
             onset_match=False,
             max_frame=max_frame,
@@ -436,8 +398,8 @@ class HoldShift:
             filled_vad,
             ds,
             self.hold_template,
-            pre_cond_frames=self.hold_offset_cond,
-            post_cond_frames=self.hold_onset_cond,
+            pre_cond_frames=self.pre_offset_hold,
+            post_cond_frames=self.post_onset_hold,
             pre_match=True,
             onset_match=True,
             max_frame=max_frame,
@@ -467,102 +429,34 @@ class HoldShift:
 
 
 if __name__ == "__main__":
-
     import matplotlib.pyplot as plt
-    from vap_turn_taking.plot_utils import plot_vad_oh
+    from vap_turn_taking.plot_utils import plot_vad_oh, plot_event
+    from vap_turn_taking.config.example_data import event_conf_frames, example
 
-    vad = torch.zeros((3, 150, 2), dtype=torch.float)
-    # Gap shifts
-    vad[0, :30, 1] = 1.0
-    vad[0, 50:80, 0] = 1.0
-    vad[0, 100:140, 1] = 1.0
-    # Hold
-    vad[1, :30, 1] = 1.0
-    vad[1, 40:80, 1] = 1.0
-    vad[1, 100:120, 1] = 1.0
-    # Overlap shifts
-    vad[2, :50, 1] = 1.0
-    vad[2, 40:80, 0] = 1.0
-    vad[2, 100:140, 1] = 1.0
+    plt.close("all")
 
-    ds = get_dialog_states(vad)
+    hs_kwargs = event_conf_frames["hs"]
+    HS = HoldShift(**hs_kwargs)
+    tt = HS(example["va"], max_frame=None)
+    for k, v in tt.items():
+        if isinstance(v, torch.Tensor):
+            print(f"{k}: {tuple(v.shape)}")
+        else:
+            print(f"{k}: {v}")
+    print("shift: ", (example["shift"] != tt["shift"]).sum())
+    print("hold: ", (example["hold"] != tt["hold"]).sum())
 
-    # HS = HoldShift(
-    #     shift_onset_cond=30,
-    #     shift_offset_cond=30,
-    #     hold_onset_cond=20,
-    #     hold_offset_cond=30,
-    #     non_shift_horizon=20,
-    #     non_shift_majority_ratio=0.9,
-    # )
-    # tt = HS(vad)
-    # b = 0
-    # fig, ax = plt.subplots(3, 1)
-    # _ = plot_vad_oh(vad[b], ax=ax[0])
-    # _ = plot_vad_oh(tt["shift"][b], ax=ax[1], colors=["g", "darkgreen"])
-    # _ = plot_vad_oh(tt["non_shift"][b], ax=ax[2])
-    # plt.pause(0.1)
-
-    from conv_ssl.evaluation.utils import load_dm
-
-    # Load Data
-    # The only required data is VAD (onehot encoding of voice activity) e.g. (B, N_FRAMES, 2) for two speakers
-    dm = load_dm(batch_size=16)
-    diter = iter(dm.val_dataloader())
-
-    batch = next(diter)
-
-    vad = batch["vad"]
-    ds = get_dialog_states(vad)
-    last_speaker = get_last_speaker(vad, ds)
-
-    HS = HoldShift(
-        shift_onset_cond=100,
-        shift_offset_cond=100,
-        hold_onset_cond=40,
-        hold_offset_cond=20,
-        non_shift_horizon=200,
-        non_shift_majority_ratio=0.95,
-    )
-    # ds = get_dialog_states(vad)
-    # filled_vad = HS.fill_template(vad, ds, HS.hold_template)
-    # b = 2
-    # fig, ax = plt.subplots(2, 1, sharey=True, sharex=True, figsize=(16, 4))
-    # _ = plot_vad_oh(vad[b], ax=ax[0])
-    # _ = plot_vad_oh(filled_vad[b], ax=ax[1])
-    # plt.show()
-    tt = HS(vad)
-
-    start = 0
-
-    n_rows = 4
-    n_cols = 4
-    fig, ax = plt.subplots(n_rows, n_cols, sharey=True, sharex=True, figsize=(16, 4))
-    b = 0
-    for row in range(n_rows):
-        for col in range(n_cols):
-            _ = plot_vad_oh(vad[b], ax=ax[row, col])
-            _ = plot_vad_oh(
-                tt["shift"][b], ax=ax[row, col], colors=["g", "g"], alpha=0.5
-            )
-            _ = plot_vad_oh(
-                tt["shift_overlap"][b],
-                ax=ax[row, col],
-                colors=["darkgreen", "darkgreen"],
-                alpha=0.8,
-            )
-            _ = plot_vad_oh(
-                tt["hold"][b], ax=ax[row, col], colors=["r", "r"], alpha=0.5
-            )
-            _ = plot_vad_oh(
-                tt["non_shift"][b].flip(-1),
-                ax=ax[row, col],
-                colors=["darkred", "darkred"],
-                alpha=0.15,
-            )
-            b += 1
-            if b == vad.shape[0]:
-                break
-        if b == vad.shape[0]:
-            break
+    fig, ax = plot_vad_oh(va[0])
+    # # _, ax = plot_event(tt["shift"][0], ax=ax)
+    # _, ax = plot_event(s[0], color=["g", "g"], ax=ax)
+    # _, ax = plot_event(h[0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(bc[0], color=["b", "b"], ax=ax)
+    # _, ax = plot_event(tt["shift_overlap"][0], ax=ax)
+    # _, ax = plot_event(tt_bc["backchannel"][0], color=["b", "b"], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt_bc["pre_backchannel"][0], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt["hold"][0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(tt['pre_shift'][0], color=['g', 'g'], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt['pre_hold'][0], color=['r', 'r'], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt['long_shift_onset'][0], color=['r', 'r'], alpha=0.2, ax=ax)
+    _, ax = plot_event(tt["non_shift"][0], color=["r", "r"], alpha=0.2, ax=ax)
     plt.pause(0.1)

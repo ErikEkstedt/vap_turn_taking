@@ -1,2 +1,4 @@
+torchmetrics
 einops
 pytest
+matplotlib

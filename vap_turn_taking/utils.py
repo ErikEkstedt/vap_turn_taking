@@ -59,3 +59,53 @@ def find_label_match(source_idx, target_idx):
     # Does not work on gpu: frames[match[:-1]] = 1.0
     frames[match[:-1]] = torch.ones_like(match[0])
     return frames, midx
+
+
+def get_dialog_states(vad) -> torch.Tensor:
+    """Vad to the full state of a 2 person vad dialog
+    0: only speaker 0
+    1: none
+    2: both
+    3: only speaker 1
+    """
+    assert vad.ndim >= 1
+    return (2 * vad[..., 1] - vad[..., 0]).long() + 1
+
+
+def last_speaker_single(s):
+    start, _, val = find_island_idx_len(s)
+
+    # exlude silences (does not effect last_speaker)
+    # silences should be the value of the previous speaker
+    sil_idx = torch.where(val == 1)[0]
+    if len(sil_idx) > 0:
+        if sil_idx[0] == 0:
+            val[0] = 2  # 2 is both we don't know if its a shift or hold
+            sil_idx = sil_idx[1:]
+        val[sil_idx] = val[sil_idx - 1]
+    # map speaker B state (=3) to 1
+    val[val == 3] = 1
+    # get repetition lengths
+    repeat = start[1:] - start[:-1]
+    # Find difference between original and repeated
+    # and use diff to repeat the last speaker until the end of segment
+    diff = len(s) - repeat.sum(0)
+    repeat = torch.cat((repeat, diff.unsqueeze(0)))
+    # repeat values to create last speaker over entire segment
+    last_speaker = torch.repeat_interleave(val, repeat)
+    return last_speaker
+
+
+def get_last_speaker(vad, ds):
+    assert vad.ndim > 1, "must provide vad of size: (N, channels) or (B, N, channels)"
+
+    # get last active speaker (for turn shift/hold)
+    if vad.ndim < 3:
+        last_speaker = last_speaker_single(ds)
+    else:  # (B, N, Channels) = (B, N, n_speakers)
+        last_speaker = []
+        for b in range(vad.shape[0]):
+            s = ds[b]
+            last_speaker.append(last_speaker_single(s))
+        last_speaker = torch.stack(last_speaker)
+    return last_speaker

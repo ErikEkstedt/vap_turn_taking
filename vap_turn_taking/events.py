@@ -1,202 +1,46 @@
 import torch
 import numpy.random as np_random
 
-from vap_turn_taking.utils import time_to_frames, find_island_idx_len
-from vap_turn_taking.backchannel import (
-    backchannel_prediction_events,
-    find_backchannel_ongoing,
-    recover_bc_prediction_negatives,
+from vap_turn_taking.backchannel import Backchannel
+from vap_turn_taking.hold_shifts import HoldShift
+from vap_turn_taking.utils import (
+    time_to_frames,
+    find_island_idx_len,
+    get_dialog_states,
+    get_last_speaker,
 )
-from vap_turn_taking.vad import DialogEvents
-
-from vap_turn_taking.backchannels import Backhannels
-from vap_turn_taking.hold_shifts import HoldShift, get_dialog_states, get_last_speaker
-
-
-class TurnTakingEventsOld:
-    def __init__(
-        self,
-        bc_idx,
-        horizon=1,
-        min_context=1,
-        start_pad=0.25,
-        target_duration=0.05,
-        pre_active=0.5,
-        bc_pre_silence=1.5,
-        bc_post_silence=3,
-        bc_max_active=2,
-        bc_prediction_window=1,
-        bc_target_duration=0.3,
-        bc_neg_active=1,
-        bc_neg_prefix=1,
-        frame_hz=100,
-    ):
-        self.pred_threshold = 0.5
-        self.frame_hz = frame_hz
-
-        # Shift/Holds
-        self.frame_horizon = time_to_frames(horizon, frame_hz)
-        self.frame_min_context = time_to_frames(min_context, frame_hz)
-        self.frame_start_pad = time_to_frames(start_pad, frame_hz)
-        self.frame_target_duration = time_to_frames(target_duration, frame_hz)
-        self.frame_min_duration = self.frame_start_pad + self.frame_target_duration
-
-        # pre-active hold/shift
-        self.frame_pre_active = time_to_frames(pre_active, frame_hz)
-
-        # backchannels
-        self.bc_pre_silence_frames = time_to_frames(bc_pre_silence, frame_hz)
-        self.bc_post_silence_frames = time_to_frames(bc_post_silence, frame_hz)
-        self.bc_max_active_frames = time_to_frames(bc_max_active, frame_hz)
-        self.bc_prediction_window = time_to_frames(bc_prediction_window, frame_hz)
-        self.bc_target_duration = time_to_frames(bc_target_duration, frame_hz)
-        self.bc_neg_active_frames = time_to_frames(bc_neg_active, frame_hz)
-        self.bc_neg_prefix_frames = time_to_frames(bc_neg_prefix, frame_hz)
-
-        self.bc_idx = bc_idx
-
-    def __repr__(self):
-        s = "ShiftHoldMetric("
-        s += f"\n  horizon: {self.frame_horizon}"
-        s += f"\n  min_context: {self.frame_min_context}"
-        s += f"\n  start_pad: {self.frame_start_pad}"
-        s += f"\n  target_duration: {self.frame_target_duration}"
-        s += f"\n  pre_active: {self.frame_pre_active}"
-        s += f"\n  bc_pre_silence: {self.bc_pre_silence_frames}"
-        s += f"\n  bc_post_silence: {self.bc_post_silence_frames}"
-        s += f"\n  bc_max_active: {self.bc_max_active_frames}"
-        s += f"\n  frame_hz: {self.frame_hz}"
-        s += "\n)"
-        return s
-
-    @torch.no_grad()
-    def __call__(self, vad, projection_idx):
-        n_frames = projection_idx.shape[1]
-
-        ret = {}
-        ret["hold"], ret["shift"] = DialogEvents.on_silence(
-            vad,
-            start_pad=self.frame_start_pad,
-            target_frames=self.frame_target_duration,
-            horizon=self.frame_horizon,
-            min_context=self.frame_min_context,
-            min_duration=self.frame_min_duration,
-        )
-
-        ret["pre_hold"], ret["pre_shift"] = DialogEvents.get_active_pre_events(
-            vad,
-            ret["hold"],
-            ret["shift"],
-            start_pad=self.frame_start_pad,
-            active_frames=self.frame_pre_active,
-            min_context=self.frame_min_context,
-        )
-
-        bc_ongoing_pos, bc_ongoing_neg = find_backchannel_ongoing(
-            vad,
-            n_test_frames=self.bc_target_duration,
-            pre_silence_frames=self.bc_pre_silence_frames,
-            post_silence_frames=self.bc_post_silence_frames,
-            max_active_frames=self.bc_max_active_frames,
-            neg_active_frames=self.bc_neg_active_frames,
-            neg_prefix_frames=self.bc_neg_prefix_frames,
-            min_context_frames=self.frame_min_context,
-            n_frames=n_frames,
-        )
-        ret["backchannel"] = bc_ongoing_pos  # can be thought of as SHIFTS
-        ret["backchannel_neg"] = bc_ongoing_neg  # Can be thought of as HOLDS
-
-        # ret["backchannel"] = find_isolated_activity_on_other_active(
-        #     vad,
-        #     pre_silence_frames=self.bc_pre_silence_frames,
-        #     post_silence_frames=self.bc_post_silence_frames,
-        #     max_active_frames=self.bc_max_active_frames,
-        # )
-
-        if self.bc_idx.device != projection_idx.device:
-            self.bc_idx = self.bc_idx.to(projection_idx.device)
-
-        ret["backchannel_prediction"] = backchannel_prediction_events(
-            projection_idx,
-            vad,
-            self.bc_idx,
-            prediction_window=self.bc_prediction_window,
-            isolated=ret["backchannel"],
-        )
-        ret["backchannel_prediction_neg"] = recover_bc_prediction_negatives(
-            bc_ongoing_neg, neg_bc_prediction_window=self.bc_prediction_window
-        )
-
-        for return_name, vector in ret.items():
-            ret[return_name] = vector[:, :n_frames]
-
-        return ret
 
 
 class TurnTakingEvents:
     def __init__(
         self,
-        shift_onset_cond=1,
-        shift_offset_cond=1,
-        hold_onset_cond=1,
-        hold_offset_cond=1,
-        min_silence=0.15,
-        non_shift_horizon=2.0,
-        non_shift_majority_ratio=0.95,
-        metric_pad=0.05,
-        metric_dur=0.1,
-        metric_onset_dur=0.3,
-        metric_pre_label_dur=0.5,
-        metric_min_context=1.0,
-        bc_max_duration=1.0,
-        bc_pre_silence=1.0,
-        bc_post_silence=1.0,
-        min_context=0,
+        hs_kwargs,
+        bc_kwargs,
+        metric_kwargs,
         frame_hz=100,
     ):
+        self.frame_hz = frame_hz
 
-        self.metric_pad = time_to_frames(metric_pad, frame_hz)
-        self.metric_dur = time_to_frames(metric_dur, frame_hz)
-        self.metric_pre_label_dur = time_to_frames(metric_pre_label_dur, frame_hz)
-        self.metric_onset_dur = time_to_frames(metric_onset_dur, frame_hz)
-        self.metric_min_context = time_to_frames(metric_min_context, frame_hz)
-        self.min_context = time_to_frames(min_context, frame_hz)
+        # Times to frames
+        self.metric_kwargs = self.kwargs_to_frames(metric_kwargs, frame_hz)
+        self.hs_kwargs = self.kwargs_to_frames(hs_kwargs, frame_hz)
+        self.bc_kwargs = self.kwargs_to_frames(bc_kwargs, frame_hz)
 
-        # Shift/Hold
-        shift_onset_cond = time_to_frames(shift_onset_cond, frame_hz)
-        shift_offset_cond = time_to_frames(shift_offset_cond, frame_hz)
-        hold_onset_cond = time_to_frames(hold_onset_cond, frame_hz)
-        hold_offset_cond = time_to_frames(hold_offset_cond, frame_hz)
-        min_silence = time_to_frames(min_silence, frame_hz)
-        non_shift_horizon = time_to_frames(non_shift_horizon, frame_hz)
-        non_shift_majority_ratio = non_shift_majority_ratio
+        # values for metrics
+        self.metric_min_context = self.metric_kwargs["min_context"]
+        self.metric_pad = self.metric_kwargs["pad"]
+        self.metric_dur = self.metric_kwargs["dur"]
+        self.metric_onset_dur = self.metric_kwargs["onset_dur"]
+        self.metric_pre_label_dur = self.metric_kwargs["pre_label_dur"]
 
-        # Backchannel
-        bc_max_duration_frames = time_to_frames(bc_max_duration, frame_hz)
-        bc_pre_silence_frames = time_to_frames(bc_pre_silence, frame_hz)
-        bc_post_silence_frames = time_to_frames(bc_post_silence, frame_hz)
+        self.HS = HoldShift(**self.hs_kwargs)
+        self.BS = Backchannel(**self.bc_kwargs)
 
-        self.HS = HoldShift(
-            shift_onset_cond=shift_onset_cond,
-            shift_offset_cond=shift_offset_cond,
-            hold_onset_cond=hold_onset_cond,
-            hold_offset_cond=hold_offset_cond,
-            min_silence=min_silence,
-            metric_pad=self.metric_pad,
-            metric_dur=self.metric_dur,
-            metric_pre_label_dur=self.metric_pre_label_dur,  # used for shift prediction
-            metric_onset_dur=self.metric_onset_dur,  # used for long/short
-            non_shift_horizon=non_shift_horizon,
-            non_shift_majority_ratio=non_shift_majority_ratio,
-        )
-        self.BS = Backhannels(
-            max_duration_frames=bc_max_duration_frames,
-            min_duration_frames=self.metric_onset_dur,
-            pre_silence_frames=bc_pre_silence_frames,
-            post_silence_frames=bc_post_silence_frames,
-            metric_dur_frames=self.metric_onset_dur,  # used for long/short
-            metric_pre_label_dur=self.metric_pre_label_dur,  # used for bc prediction
-        )
+    def kwargs_to_frames(self, kwargs, frame_hz):
+        new_kwargs = {}
+        for k, v in kwargs.items():
+            new_kwargs[k] = time_to_frames(v, frame_hz)
+        return new_kwargs
 
     def __repr__(self):
         s = "TurnTakingEvents\n"
@@ -305,7 +149,7 @@ class TurnTakingEvents:
             negs[b, s : s + dur, sp] = 1.0
         return negs.float()
 
-    def __call__(self, vad, max_frame=1000):
+    def __call__(self, vad, max_frame=None):
         ds = get_dialog_states(vad)
         last_speaker = get_last_speaker(vad, ds)
 
@@ -317,7 +161,9 @@ class TurnTakingEvents:
         # shift, pre_shift, long_shift_onset,
         # hold, pre_hold, long_hold_onset,
         # shift_overlap, pre_shift_overlap, non_shift
-        tt = self.HS(vad=vad, ds=ds, max_frame=max_frame, min_context=self.min_context)
+        tt = self.HS(
+            vad=vad, ds=ds, max_frame=max_frame, min_context=self.metric_min_context
+        )
 
         # Backchannels:
         # backchannel, pre_backchannel
@@ -325,7 +171,7 @@ class TurnTakingEvents:
             vad=vad,
             last_speaker=last_speaker,
             max_frame=max_frame,
-            min_context=self.min_context,
+            min_context=self.metric_min_context,
         )
 
         #######################################################
@@ -335,17 +181,7 @@ class TurnTakingEvents:
         # where SHORT segments are "backchannel" and LONG har onset on new TURN (SHIFTs)
         # or onset of HOLD ipus
         short = bcs["backchannel"]
-        # n_short = self.count_occurances(short)
         long = self.sample_negative_segments(tt["long_shift_onset"], 1000)
-        # if n_short == 0:
-        #     long = torch.zeros_like(short)
-        # else:
-        #     # Combine hold/shift onsets. They are both considerd long.
-        #     long_onsets = torch.logical_or(
-        #       tt["long_shift_onset"], tt["long_hold_onset"]
-        #     )
-        #     sample equal from onsets over holds/shifts
-        #     long = self.sample_negative_segments(long_onsets, n_short)
 
         #######################################################
         # Predict shift
@@ -391,137 +227,10 @@ class TurnTakingEvents:
         }
 
 
-def debug_tt2():
-
-    import matplotlib.pyplot as plt
-    from conv_ssl.evaluation.utils import load_dm
-    from vap_turn_taking.plot_utils import plot_vad_oh
-
-    # Load Data
-    # The only required data is VAD (onehot encoding of voice activity) e.g. (B, N_FRAMES, 2) for two speakers
-    dm = load_dm(batch_size=16)
-    diter = iter(dm.val_dataloader())
-    batch = next(diter)
-    vad = batch["vad"]
-
-    eventer = TurnTakingEvents(
-        min_silence=0.3,
-        metric_pad=0.1,
-        metric_dur=0.2,
-        metric_onset_dur=0.3,
-    )
-    # eventer
-    tt = eventer(vad)
-    for k, v in tt.items():
-        if isinstance(v, torch.Tensor):
-            print(f"{k}: {tuple(v.shape)}, {v.sum()}, {v.dtype}")
-        else:
-            print(f"{k}: {v}")
-
-    n_rows = 4
-    n_cols = 4
-    fig, ax = plt.subplots(n_rows, n_cols, sharey=True, sharex=True, figsize=(16, 4))
-    b = 0
-    for row in range(n_rows):
-        for col in range(n_cols):
-            _ = plot_vad_oh(vad[b], ax=ax[row, col], alpha=0.7)
-            # SHIFT/HOLD
-            # _ = plot_vad_oh(
-            #     tt["shift"][b], ax=ax[row, col], colors=["g", "g"], alpha=0.5
-            # )
-            # _ = plot_vad_oh(
-            #     tt["hold"][b], ax=ax[row, col], colors=["r", "r"], alpha=0.5
-            # )
-            # PREDICT SHIFT ON ACTIVE
-            # _ = plot_vad_oh(
-            #     tt["predict_shift_pos"][b],
-            #     ax=ax[row, col],
-            #     colors=["g", "g"],
-            #     alpha=0.3,
-            # )
-            # _ = plot_vad_oh(
-            #     tt["predict_shift_neg"][b],
-            #     ax=ax[row, col],
-            #     colors=["r", "r"],
-            #     alpha=0.3,
-            # )
-            # SHORT/LONG
-            _ = plot_vad_oh(
-                tt["short"][b],
-                ax=ax[row, col],
-                colors=["g", "g"],
-                alpha=0.6,
-            )
-            _ = plot_vad_oh(
-                tt["long"][b],
-                ax=ax[row, col],
-                colors=["r", "r"],
-                alpha=0.5,
-            )
-            # PREDICT BACKCHANNEL
-            # _ = plot_vad_oh(
-            #     tt["predict_bc_pos"][b],
-            #     ax=ax[row, col],
-            #     colors=["g", "g"],
-            #     alpha=0.6,
-            # )
-            # _ = plot_vad_oh(
-            #     tt["predict_bc_neg"][b],
-            #     ax=ax[row, col],
-            #     colors=["r", "r"],
-            #     alpha=0.5,
-            # )
-            b += 1
-            if b == vad.shape[0]:
-                break
-        if b == vad.shape[0]:
-            break
-    plt.pause(0.1)
-
-    n_rows = 4
-    n_cols = 4
-    fig, ax = plt.subplots(n_rows, n_cols, sharey=True, sharex=True, figsize=(16, 4))
-    b = 0
-    for row in range(n_rows):
-        for col in range(n_cols):
-            _ = plot_vad_oh(vad[b], ax=ax[row, col])
-            _ = plot_vad_oh(
-                tt["shift"][b], ax=ax[row, col], colors=["g", "g"], alpha=0.5
-            )
-            # _ = plot_vad_oh(
-            #     tt["shift_overlap"][b],
-            #     ax=ax[row, col],
-            #     colors=["darkgreen", "darkgreen"],
-            #     alpha=0.8,
-            # )
-            _ = plot_vad_oh(
-                tt["hold"][b], ax=ax[row, col], colors=["r", "r"], alpha=0.5
-            )
-            _ = plot_vad_oh(
-                tt["backchannel"][b],
-                ax=ax[row, col],
-                colors=["purple", "purple"],
-                alpha=0.8,
-            )
-            _ = plot_vad_oh(
-                tt["non_shift"][b].flip(-1),
-                ax=ax[row, col],
-                colors=["darkred", "darkred"],
-                alpha=0.15,
-            )
-            b += 1
-            if b == vad.shape[0]:
-                break
-        if b == vad.shape[0]:
-            break
-    plt.pause(0.1)
-
-
-if __name__ == "__main__":
-
+def old_main():
     from conv_ssl.evaluation.utils import load_dm
     from vap_turn_taking.plot_utils import plot_backchannel_prediction
-    from vap_turn_taking.vad_projection import ProjectionCodebook, VadLabel
+    from vap_turn_taking.vap import ProjectionCodebook, VadLabel
     from vap_turn_taking.backchannel import find_isolated_within
     import matplotlib.pyplot as plt
 
@@ -580,7 +289,7 @@ if __name__ == "__main__":
 
     # for batch in diter:
     batch = next(diter)
-    projection_idx = codebook(VL.vad_projection(batch["vad"]))
+    projection_idx = codebook(VL.vap(batch["vad"]))
     vad = batch["vad"]
     isolated = find_isolated_within(
         vad,
@@ -625,4 +334,50 @@ if __name__ == "__main__":
         a.plot(isolated[i, :, 0], color="k", linewidth=1)
         a.plot(-isolated[i, :, 1], color="k", linewidth=1)
     # plt.show()
+    plt.pause(0.1)
+
+
+if __name__ == "__main__":
+
+    import matplotlib.pyplot as plt
+    from vap_turn_taking.config.example_data import example, event_conf
+    from vap_turn_taking.plot_utils import plot_vad_oh, plot_event
+
+    eventer = TurnTakingEvents(
+        hs_kwargs=event_conf["hs"],
+        bc_kwargs=event_conf["bc"],
+        metric_kwargs=event_conf["metric"],
+        frame_hz=100,
+    )
+    va = example["va"]
+    events = eventer(va, max_frame=None)
+    print("long: ", (events["long"] != example["long"]).sum())
+    print("short: ", (events["short"] != example["short"]).sum())
+    print("shift: ", (events["shift"] != example["shift"]).sum())
+    print("hold: ", (events["hold"] != example["hold"]).sum())
+    # for k, v in events.items():
+    #     if isinstance(v, torch.Tensor):
+    #         print(f"{k}: {tuple(v.shape)}")
+    #     else:
+    #         print(f"{k}: {v}")
+    fig, ax = plot_vad_oh(va[0])
+    # _, ax = plot_event(events["shift"][0], ax=ax)
+    _, ax = plot_event(events["hold"][0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(events["short"][0], ax=ax)
+    # _, ax = plot_event(events["long"][0], color=['r', 'r'], ax=ax)
+    # _, ax = plot_event(example['short'][0], color=["g", "g"], ax=ax)
+    # _, ax = plot_event(example['long'][0], color=["r", "r"], ax=ax)
+    _, ax = plot_event(example["hold"][0], color=["b", "b"], ax=ax)
+    # _, ax = plot_event(example['shift'][0], color=["g", "g"], ax=ax)
+    # _, ax = plot_event(example['short'][0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(example['long'][0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(bc[0], color=["b", "b"], ax=ax)
+    # _, ax = plot_event(tt["shift_overlap"][0], ax=ax)
+    # _, ax = plot_event(events["short"][0], color=["b", "b"], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt_bc["pre_backchannel"][0], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt["hold"][0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(tt['pre_shift'][0], color=['g', 'g'], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt['pre_hold'][0], color=['r', 'r'], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt['long_shift_onset'][0], color=['r', 'r'], alpha=0.2, ax=ax)
+    # _, ax = plot_event(events["non_shift"][0], color=["r", "r"], alpha=0.2, ax=ax)
     plt.pause(0.1)
