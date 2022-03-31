@@ -197,11 +197,7 @@ class VAPLabel(nn.Module):
             m = (m >= self.threshold_ratio).float()
             v_bins.append(m)
             start = end
-        v_bins = torch.stack(v_bins, dim=-1)  # (*, t, c, n_bins)
-
-        # Treat the 2-channel activity as a single binary sequence
-        v_bins = v_bins.flatten(-2)  # (*, t, c, n_bins) -> (*, t, (c n_bins))
-        return rearrange(v_bins, "... (c d) -> ... c d", c=2)
+        return torch.stack(v_bins, dim=-1)  # (*, t, c, n_bins)
 
     def comparative(self, projection_window):
         """
