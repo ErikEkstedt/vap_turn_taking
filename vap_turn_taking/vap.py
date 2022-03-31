@@ -217,22 +217,13 @@ class VAPLabel(nn.Module):
         comp = comp[..., 0] / tot
         return comp
 
-    def __call__(
-        self, va: torch.Tensor, type: str = "binary"
-    ) -> Union[torch.Tensor, Tuple]:
-        vap_bins = None
-        vap_comp = None
-
+    def __call__(self, va: torch.Tensor, type: str = "binary") -> torch.Tensor:
         projection_windows = self.projection(va)
 
-        if type == "binary":
-            return self.vap_bins(projection_windows)
-        elif type == "comparative":
+        if type == "comparative":
             return self.comparative(projection_windows)
-        else:
-            vap_bins = self.vap_bins(projection_windows)
-            vap_comp = self.comparative(projection_windows)
-            return vap_bins, vap_comp
+
+        return self.vap_bins(projection_windows)
 
 
 class ActivityEmb(nn.Module):
@@ -571,7 +562,7 @@ class VAP(nn.Module, Probabilites):
         p_probs = torch.stack((p_a, p_b), dim=-1)
         return p_probs
 
-    def extract_label(self, va):
+    def extract_label(self, va: torch.Tensor) -> torch.Tensor:
         if self.type == "comparative":
             return self.vap_label(va, type="comparative")
 
