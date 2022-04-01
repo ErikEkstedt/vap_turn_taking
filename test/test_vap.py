@@ -1,7 +1,6 @@
 import pytest
-
 from vap_turn_taking import VAP
-from vap_turn_taking.config.example_data import example, event_conf
+from vap_turn_taking.config.example_data import example
 
 
 @pytest.mark.vap

@@ -552,3 +552,41 @@ def plot_event(ev, label=[None, None], color=["g", "g"], alpha=0.5, ax=None):
             alpha=alpha,
         )
     return fig, ax
+
+
+if __name__ == "__main__":
+
+    from vap_turn_taking.config.example_data import event_conf, example
+    from vap_turn_taking import TurnTakingEvents
+
+    eventer = TurnTakingEvents(
+        hs_kwargs=event_conf["hs"],
+        bc_kwargs=event_conf["bc"],
+        metric_kwargs=event_conf["metric"],
+        frame_hz=100,
+    )
+
+    va = example["va"]
+    events = eventer(va, max_frame=None)
+
+    fig, ax = plot_vad_oh(va[0])
+    # _, ax = plot_event(events["shift"][0], ax=ax)
+    _, ax = plot_event(events["hold"][0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(events["short"][0], ax=ax)
+    # _, ax = plot_event(events["long"][0], color=['r', 'r'], ax=ax)
+    # _, ax = plot_event(example['short'][0], color=["g", "g"], ax=ax)
+    # _, ax = plot_event(example['long'][0], color=["r", "r"], ax=ax)
+    _, ax = plot_event(example["hold"][0], color=["b", "b"], ax=ax)
+    # _, ax = plot_event(example['shift'][0], color=["g", "g"], ax=ax)
+    # _, ax = plot_event(example['short'][0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(example['long'][0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(bc[0], color=["b", "b"], ax=ax)
+    # _, ax = plot_event(tt["shift_overlap"][0], ax=ax)
+    # _, ax = plot_event(events["short"][0], color=["b", "b"], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt_bc["pre_backchannel"][0], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt["hold"][0], color=["r", "r"], ax=ax)
+    # _, ax = plot_event(tt['pre_shift'][0], color=['g', 'g'], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt['pre_hold'][0], color=['r', 'r'], alpha=0.2, ax=ax)
+    # _, ax = plot_event(tt['long_shift_onset'][0], color=['r', 'r'], alpha=0.2, ax=ax)
+    # _, ax = plot_event(events["non_shift"][0], color=["r", "r"], alpha=0.2, ax=ax)
+    plt.pause(0.1)

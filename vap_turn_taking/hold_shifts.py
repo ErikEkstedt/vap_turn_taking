@@ -342,7 +342,7 @@ class HoldShift:
         b_non_shift = torch.logical_and(b_last, maj_speaker_cond[..., 1])
         ns = torch.stack((a_non_shift, b_non_shift), dim=-1).float()
         # fill to correct size (same as vad and all other events)
-        z = torch.zeros(nb, diff, 2)
+        z = torch.zeros((nb, diff, 2), device=ns.device)
         non_shift = torch.cat((ns, z), dim=1)
 
         # Min Context Condition

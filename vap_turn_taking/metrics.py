@@ -1,117 +1,42 @@
 import torch
-from torchmetrics import Metric, Accuracy, F1Score, PrecisionRecallCurve, StatScores
+from torchmetrics import Metric, F1Score, PrecisionRecallCurve, StatScores
+
 from vap_turn_taking.events import TurnTakingEvents
-
-
-@torch.no_grad()
-def get_f1_statistics(ac, an, bc, bn):
-    """
-    F1 statistics over Shift/Hold
-
-    Example 'Shift':
-        * ac = A true positives
-        * an = all A events, total
-        * bc = B true positives
-        * bn = all B events, total
-
-    True Positives:  shift_correct
-    False Negatives:  All HOLD predictions at SHIFT locations -> (shift_total - shift_correct)
-    True Negatives:  All HOLD predictions at HOLD locations -> hold_correct
-    False Positives:  All SHIFT predictions at HOLD locations -> (hold_total - hold_correct)
-
-    Symmetrically true for Holds.
-    """
-    EPS = 1e-9
-    tp = ac
-    fn = an - ac
-    tn = bc
-    fp = bn - bc
-    precision = tp / (tp + fp + EPS)
-    recall = tp / (tp + fn + EPS)
-    support = tp + fn
-    f1 = tp / (tp + 0.5 * (fp + fn) + EPS)
-    return {
-        "f1": f1,
-        "support": support,
-        "precision": precision,
-        "recall": recall,
-        "tp": tp,
-        "tn": tn,
-        "fp": fp,
-        "fn": fn,
-    }
-
-
-@torch.no_grad()
-def correct_shift_hold(p, shift, hold, threshold=0.5):
-    ret = {
-        "shift": {"correct": 0, "n": 0},
-        "hold": {"correct": 0, "n": 0},
-    }
-    # shifts
-    next_speaker = 0
-    w = torch.where(shift[..., next_speaker])
-    if len(w[0]) > 0:
-        sa = (p[w][..., next_speaker] >= threshold).sum().item()
-        ret["shift"]["correct"] += sa
-        ret["shift"]["n"] += len(w[0])
-    next_speaker = 1
-    w = torch.where(shift[..., next_speaker])
-    if len(w[0]) > 0:
-        sb = (p[w][..., next_speaker] >= threshold).sum().item()
-        ret["shift"]["correct"] += sb
-        ret["shift"]["n"] += len(w[0])
-    # holds
-    next_speaker = 0
-    w = torch.where(hold[..., next_speaker])
-    if len(w[0]) > 0:
-        ha = (p[w][..., next_speaker] >= threshold).sum().item()
-        ret["hold"]["correct"] += ha
-        ret["hold"]["n"] += len(w[0])
-    next_speaker = 1
-    w = torch.where(hold[..., next_speaker])
-    if len(w[0]) > 0:
-        hb = (p[w][..., next_speaker] >= threshold).sum().item()
-        ret["hold"]["correct"] += hb
-        ret["hold"]["n"] += len(w[0])
-    return ret
-
-
-@torch.no_grad()
-def extract_shift_hold_probs(p, shift, hold):
-    probs, labels = [], []
-
-    for next_speaker in [0, 1]:
-        ws = torch.where(shift[..., next_speaker])
-        if len(ws[0]) > 0:
-            tmp_probs = p[ws][..., next_speaker]
-            tmp_lab = torch.ones_like(tmp_probs, dtype=torch.long)
-            probs.append(tmp_probs)
-            labels.append(tmp_lab)
-
-        # Hold label -> 0
-        # Hold prob -> 1 - p  # opposite guess
-        wh = torch.where(hold[..., next_speaker])
-        if len(wh[0]) > 0:
-            # complement in order to be combined with shifts
-            tmp_probs = 1 - p[wh][..., next_speaker]
-            tmp_lab = torch.zeros_like(tmp_probs, dtype=torch.long)
-            probs.append(tmp_probs)
-            labels.append(tmp_lab)
-
-    if len(probs) > 0:
-        probs = torch.cat(probs)
-        labels = torch.cat(labels)
-    else:
-        probs = None
-        labels = None
-    return probs, labels
 
 
 class F1_Hold_Shift(Metric):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.stat_scores = StatScores(reduce="macro", multiclass=True, num_classes=2)
+
+    def probs_shift_hold(self, p, shift, hold):
+        probs, labels = [], []
+
+        for next_speaker in [0, 1]:
+            ws = torch.where(shift[..., next_speaker])
+            if len(ws[0]) > 0:
+                tmp_probs = p[ws][..., next_speaker]
+                tmp_lab = torch.ones_like(tmp_probs, dtype=torch.long)
+                probs.append(tmp_probs)
+                labels.append(tmp_lab)
+
+            # Hold label -> 0
+            # Hold prob -> 1 - p  # opposite guess
+            wh = torch.where(hold[..., next_speaker])
+            if len(wh[0]) > 0:
+                # complement in order to be combined with shifts
+                tmp_probs = 1 - p[wh][..., next_speaker]
+                tmp_lab = torch.zeros_like(tmp_probs, dtype=torch.long)
+                probs.append(tmp_probs)
+                labels.append(tmp_lab)
+
+        if len(probs) > 0:
+            probs = torch.cat(probs)
+            labels = torch.cat(labels)
+        else:
+            probs = None
+            labels = None
+        return probs, labels
 
     def get_score(self, tp, fp, tn, fn, EPS=1e-9):
         precision = tp / (tp + fp + EPS)
@@ -152,18 +77,21 @@ class F1_Hold_Shift(Metric):
         }
 
     def update(self, p, hold, shift):
-        probs, labels = extract_shift_hold_probs(p, shift=shift, hold=hold)
+        probs, labels = self.probs_shift_hold(p, shift=shift, hold=hold)
         if probs is not None:
             self.stat_scores.update(probs, labels)
 
 
 class TurnTakingMetrics(Metric):
     """
-    Used with discrete model, VADProjection.
+    Used with discrete model, VAProjection.
     """
 
     def __init__(
         self,
+        hs_kwargs,
+        bc_kwargs,
+        metric_kwargs,
         threshold_pred_shift=0.5,
         threshold_short_long=0.5,
         threshold_bc_pred=0.5,
@@ -172,7 +100,6 @@ class TurnTakingMetrics(Metric):
         long_short_pr_curve=False,
         frame_hz=100,
         dist_sync_on_step=False,
-        **event_kwargs,
     ):
         # call `self.add_state`for every internal state that is needed for the metrics computations
         # dist_reduce_fx indicates the function that should be used to reduce
@@ -214,11 +141,16 @@ class TurnTakingMetrics(Metric):
             self.long_short_pr = PrecisionRecallCurve(pos_label=1)
 
         # Extract the frames of interest for the given metrics
-        self.eventer = TurnTakingEvents(**event_kwargs, frame_hz=frame_hz)
+        self.eventer = TurnTakingEvents(
+            hs_kwargs=hs_kwargs,
+            bc_kwargs=bc_kwargs,
+            metric_kwargs=metric_kwargs,
+            frame_hz=frame_hz,
+        )
 
     @torch.no_grad()
-    def extract_events(self, vad, max_frame=1000):
-        return self.eventer(vad, max_frame=max_frame)
+    def extract_events(self, va, max_frame=None):
+        return self.eventer(va, max_frame=max_frame)
 
     def __repr__(self):
         s = "TurnTakingMetrics"
@@ -428,7 +360,7 @@ class TurnTakingMetrics(Metric):
             )
 
 
-if __name__ == "__main__":
+def main_old():
     from tqdm import tqdm
     import matplotlib.pyplot as plt
     from conv_ssl.evaluation.utils import load_dm, load_model
@@ -523,17 +455,6 @@ if __name__ == "__main__":
     for k, v in result.items():
         print(f"{k}: {v}")
 
-    # print("f1_weighted: ", result["f1_weighted"])
-    # print("f1_pre_weighted: ", result["f1_pre_weighted"])
-    # print("f1_bc_ongoing: ", result["f1_bc_ongoing"])
-    # print("f1_bc_prediction: ", result["f1_bc_prediction"])
 
-    # precision, recall, threshold = result["pr_curve_bc_pred"]
-    #
-    # fig, ax = plt.subplots(1, 1)
-    # ax.plot(recall.cpu(), precision.cpu())
-    # ax.set_xlabel("Recall")
-    # ax.set_xlim([0, 1])
-    # ax.set_ylabel("Precision")
-    # ax.set_ylim([0, 1])
-    # plt.show()
+if __name__ == "__main__":
+    from vap_turn_taking.config.example_data import example, event_conf

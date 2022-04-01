@@ -2,6 +2,9 @@ import torch
 
 from vap_turn_taking.utils import time_to_frames
 
+# TODO:Decide on config format/class/yaml/json
+
+
 # Configs for Events
 metric_kwargs = dict(
     pad=0,  # int, pad on silence (shift/hold) onset used for evaluating\

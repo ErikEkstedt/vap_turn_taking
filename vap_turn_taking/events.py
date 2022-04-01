@@ -165,8 +165,7 @@ class TurnTakingEvents:
             vad=vad, ds=ds, max_frame=max_frame, min_context=self.metric_min_context
         )
 
-        # Backchannels:
-        # backchannel, pre_backchannel
+        # Backchannels: backchannel, pre_backchannel
         bcs = self.BS(
             vad=vad,
             last_speaker=last_speaker,

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
-from typing import List, Tuple, Union
+from typing import List
 
 from vap_turn_taking.utils import vad_to_dialog_vad_states
 
@@ -406,7 +406,7 @@ class ActivityEmb(nn.Module):
 
 
 class Probabilites:
-    def _normalize_reg_probs(self, probs):
+    def _normalize_ind_probs(self, probs):
         probs = probs.sum(dim=-1)  # sum all bins for each speaker
         return probs / probs.sum(dim=-1, keepdim=True)  # norm
 
@@ -466,6 +466,7 @@ class VAP(nn.Module, Probabilites):
         self.bin_times = bin_times
         self.emb = ActivityEmb(bin_times, frame_hz)
         self.vap_label = VAPLabel(bin_times, frame_hz, threshold_ratio)
+        self.horizon = torch.tensor(self.bin_times).sum(0).item()
 
     def __repr__(self):
         s = super().__repr__().split("\n")
@@ -484,10 +485,10 @@ class VAP(nn.Module, Probabilites):
         )
 
     def _probs_ind_on_silence(self, probs):
-        return self._normalize_reg_probs(probs)
+        return self._normalize_ind_probs(probs)
 
     def _probs_ind_on_active(self, probs):
-        return self._normalize_reg_probs(probs[..., :, self.pre_frames :])
+        return self._normalize_ind_probs(probs[..., :, self.pre_frames :])
 
     def _probs_weighted_on_silence(self, probs):
         sil_probs = probs.unsqueeze(
