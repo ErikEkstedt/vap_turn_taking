@@ -456,6 +456,7 @@ class VAP(nn.Module, Probabilites):
         type="discrete",
         bin_times=[0.20, 0.40, 0.60, 0.80],
         frame_hz=100,
+        pre_frames=2,
         threshold_ratio=0.5,
     ):
         super().__init__()
@@ -467,6 +468,7 @@ class VAP(nn.Module, Probabilites):
         self.emb = ActivityEmb(bin_times, frame_hz)
         self.vap_label = VAPLabel(bin_times, frame_hz, threshold_ratio)
         self.horizon = torch.tensor(self.bin_times).sum(0).item()
+        self.pre_frames = pre_frames
 
     def __repr__(self):
         s = super().__repr__().split("\n")
