@@ -470,6 +470,11 @@ class VAP(nn.Module, Probabilites):
         self.horizon = torch.tensor(self.bin_times).sum(0).item()
         self.pre_frames = pre_frames
 
+    @property
+    def vap_bins(self):
+        n = torch.arange(self.emb.n_classes, device=self.emb.codebook.weight.device)
+        return self.emb.idx_to_onehot(n)
+
     def __repr__(self):
         s = super().__repr__().split("\n")
         s.insert(1, f"  type: {self.type}")

@@ -1,18 +1,23 @@
-import matplotlib.pyplot as plt
-import torchaudio
 import torch
+import torchaudio
+import subprocess
+from tqdm import tqdm
+
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from matplotlib.patches import Rectangle
 
 from vap_turn_taking.plot_utils import plot_vad_oh
 
+mpl.use("agg")
 
-def get_weighted_onehot(logits, model):
-    probs = logits.softmax(-1)
-    ohs = model.projection_codebook.idx_to_onehot(
-        torch.arange(model.projection_codebook.n_classes).cuda()
-    ).cpu()
-    ohs = probs.unsqueeze(-1).unsqueeze(-1) * ohs
-    ohs = ohs.sum(dim=1)  # sum all class onehot
-    return ohs
+"""
+This works if FFMPEG is installed correctly. The below line should work.
+
+conda install -c conda-forge ffmpeg
+
+"""
 
 
 class VAPanimation:
@@ -24,7 +29,7 @@ class VAPanimation:
         vap_bins,
         x,
         va,
-        events,
+        events=None,
         window_duration=10,
         frame_hz=100,
         sample_rate=16000,
@@ -39,7 +44,7 @@ class VAPanimation:
         self.p_class = p_class
 
         self.vap_bins = vap_bins
-        self.weighted_oh = p_class * vap_bins
+        self.weighted_oh = self._weighted_oh(p_class, vap_bins)
         self.best_p, self.best_idx = p_class.max(dim=-1)
 
         # Model input
@@ -77,6 +82,11 @@ class VAPanimation:
 
         self.draw_static()
         self.started = False
+
+    def _weighted_oh(self, p_class, vap_bins):
+        weighted_oh = p_class.unsqueeze(-1).unsqueeze(-1) * vap_bins
+        weighted_oh = weighted_oh.sum(dim=1)  # sum all class onehot
+        return weighted_oh
 
     def set_axis_lim(self):
         self.ax.set_xlim([0, self.window_frames])
@@ -245,24 +255,35 @@ class VAPanimation:
         moviewriter = animation.FFMpegWriter(
             fps=self.fps  # , codec="libopenh264", extra_args=["-threads", "16"]
         )
+
         with moviewriter.saving(ani.fig, tmp_video_path, dpi=self.dpi):
             for step in tqdm(range(0, n_frames, self.frame_step)):
                 _ = ani.update(step)
                 moviewriter.grab_frame()
-
         self.ffmpeg_call(path, tmp_video_path, tmp_wav_path)
 
 
 if __name__ == "__main__":
 
-    x = torch.rand(1, 16000)  # Waveform
-    events = {"shift", "hold", "backchannel"}  # Events
-    va = torch.rand(1, 100, 2)  # Voice Activity
-    p = torch.rand(1, 100, 2)  # Next speaker probs
-    p_bc = torch.rand(1, 100, 2)  # Backchannel probs
-    p_class = torch.rand(1, 100)  # Backchannel probs
-    vap_bins = torch.rand(256, 2, 4)  # the binary representation of the bin window
+    data = torch.load("../conv_ssl/assets/video.pt")
+
+    # x = torch.rand(1, 16000)  # Waveform
+    # events = {"shift", "hold", "backchannel"}  # Events
+    # va = torch.rand(1, 100, 2)  # Voice Activity
+    # p = torch.rand(1, 100, 2)  # Next speaker probs
+    # p_bc = torch.rand(1, 100, 2)  # Backchannel probs
+    # p_class = torch.rand(1, 100)  # Backchannel probs
+    # vap_bins = torch.rand(256, 2, 4)  # the binary representation of the bin window
 
     # Save video
-    ani = VAPanimation(p, p_bc, p_class, vap_bins, x, va, events, fps=20)
+    ani = VAPanimation(
+        p=data["p"],
+        p_bc=data["p_bc"],
+        p_class=data["logits"].softmax(-1),
+        vap_bins=data["vap_bins"],
+        x=data["waveform"],
+        va=data["va"],
+        events=None,
+        fps=20,
+    )
     ani.save_video("test.mp4")
