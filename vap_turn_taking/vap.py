@@ -196,8 +196,7 @@ class VAPLabel(nn.Module):
         comp = projection_window.sum(dim=-1)  # sum all activity for speakers
         tot = comp.sum(dim=-1) + 1e-9  # get total activity
         # focus on speaker 0 and get ratio: p(speaker_1)= 1 - p(speaker_0)
-        comp = comp[..., 0] / tot
-        return comp
+        return comp[..., 0] / tot
 
     def __call__(self, va: torch.Tensor, type: str = "binary") -> torch.Tensor:
         projection_windows = self.projection(va)
@@ -218,16 +217,17 @@ class ActivityEmb(nn.Module):
         self.n_classes = 2 ** self.total_bins
 
         # Discrete indices
-        self.codebook = self.init_codebook()
+        if self.n_bins <= 5:
+            self.codebook = self.init_codebook()
 
-        # weighted by bin size (subset for active/silent is modified dependent on bin_frames)
-        wsil, wact = self.init_subset_weighted_by_bin_size()
-        self.subset_bin_weighted_silence = wsil
-        self.subset_bin_weighted_active = wact
+            # weighted by bin size (subset for active/silent is modified dependent on bin_frames)
+            wsil, wact = self.init_subset_weighted_by_bin_size()
+            self.subset_bin_weighted_silence = wsil
+            self.subset_bin_weighted_active = wact
 
-        self.subset_silence, self.subset_silence_hold = self.init_subset_silence()
-        self.subset_active, self.subset_active_hold = self.init_subset_active()
-        self.bc_prediction = self.init_subset_backchannel()
+            self.subset_silence, self.subset_silence_hold = self.init_subset_silence()
+            self.subset_active, self.subset_active_hold = self.init_subset_active()
+            self.bc_prediction = self.init_subset_backchannel()
         self.requires_grad_(False)
 
     def init_codebook(self) -> nn.Module:
@@ -259,6 +259,8 @@ class ActivityEmb(nn.Module):
                 embs[i] = single_idx_to_onehot(i, d=n_bins)
             return embs
 
+        print("n_classes: ", self.n_classes)
+        print("total_bins: ", self.total_bins)
         codebook = nn.Embedding(
             num_embeddings=self.n_classes, embedding_dim=self.total_bins
         )
@@ -527,6 +529,9 @@ class VAP(nn.Module, Probabilites):
         elif type == "weighted":
             sil_probs = self._probs_weighted_on_silence(probs)
             act_probs = self._probs_weighted_on_active(probs)
+        elif type == "comparative":
+            pB = 1 - probs
+            sil_probs = act_probs = torch.cat((probs, pB), dim=-1)
         else:  # discrete
             sil_probs = self._probs_on_silence(probs)
             act_probs = self._probs_on_active(probs)
@@ -581,17 +586,18 @@ class VAP(nn.Module, Probabilites):
         Probabilites for events dependent on VAP-embedding and VA.
         """
 
-        probs = logits.softmax(dim=-1)
-        p = self.probs_next_speaker(probs=probs, va=va, type=self.type)
-
         # Next speaker probs
         if self.type == "discrete":
+            probs = logits.softmax(dim=-1)
+            p = self.probs_next_speaker(probs=probs, va=va, type=self.type)
             p_bc = self.probs_backchannel(probs)
-        elif self.type == "independent":
-            # Backchannel probs (dependent on embedding and VA)
-            p_bc = probs_ind_backchannel(probs)
         else:
-            p_bc = None
+            probs = logits.sigmoid()
+            p = self.probs_next_speaker(probs=probs, va=va, type=self.type)
+            p_bc = None  # comparative
+            if self.type == "independent":
+                # Backchannel probs (dependent on embedding and VA)
+                p_bc = probs_ind_backchannel(probs)
 
         return {"p": p, "bc_prediction": p_bc}
 

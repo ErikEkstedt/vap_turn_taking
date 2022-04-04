@@ -303,9 +303,7 @@ class TurnTakingMetrics(Metric):
         ret["hold"] = f1_hs["hold"]
         return ret
 
-    def update(
-        self, p, pre_probs=None, bc_pred_probs=None, events=None, vad=None, **kwargs
-    ):
+    def update(self, p, bc_pred_probs=None, events=None, va=None):
         """
         p:              tensor, next_speaker probability. Must take into account current speaker such that it can be used for pre-shift/hold, backchannel-pred/ongoing
         pre_probs:      tensor, on active next speaker probability for independent
@@ -328,12 +326,17 @@ class TurnTakingMetrics(Metric):
 
         # Find valid event-frames if event is not given
         if events is None:
-            events = self.extract_events(vad)
+            events = self.extract_events(va)
 
         # SHIFT/HOLD
         self.hs.update(p, hold=events["hold"], shift=events["shift"])
 
-        # PREDICT BACKCHANNELS
+        # Predict Shifts
+        self.update_predict_shift(
+            p, pos=events["predict_shift_pos"], neg=events["predict_shift_neg"]
+        )
+
+        # PREDICT BACKCHANNELS & Short/Long
         if bc_pred_probs is not None:
             self.update_predict_backchannel(
                 bc_pred_probs,
@@ -341,23 +344,13 @@ class TurnTakingMetrics(Metric):
                 neg=events["predict_bc_neg"],
             )
 
-        # Long/Short
-        if pre_probs is None:
-            self.update_predict_shift(
-                p, pos=events["predict_shift_pos"], neg=events["predict_shift_neg"]
-            )
+            # Long/Short
             self.update_short_long(
                 bc_pred_probs, short=events["short"], long=events["long"]
             )
         else:
-            self.update_predict_shift(
-                p,
-                pos=events["predict_shift_pos"],
-                neg=events["predict_shift_neg"],
-            )
-            self.update_short_long(
-                pre_probs, short=events["short"], long=events["long"]
-            )
+            # Long/Short
+            self.update_short_long(p, short=events["short"], long=events["long"])
 
 
 def main_old():
