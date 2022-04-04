@@ -265,8 +265,17 @@ class VAPanimation:
 
 if __name__ == "__main__":
 
-    data = torch.load("../conv_ssl/assets/video.pt")
+    from argparse import ArgumentParser
 
+    parser = ArgumentParser()
+    parser.add_argument("--video_data", type=str)
+    parser.add_argument("--filename", type=str, default="video.mp4")
+    args = parser.parse_args()
+
+    if not args.filename.endswith(".mp4"):
+        args.filename += ".mp4"
+
+    data = torch.load(args.video_data)
     # x = torch.rand(1, 16000)  # Waveform
     # events = {"shift", "hold", "backchannel"}  # Events
     # va = torch.rand(1, 100, 2)  # Voice Activity
@@ -286,4 +295,4 @@ if __name__ == "__main__":
         events=None,
         fps=20,
     )
-    ani.save_video("test.mp4")
+    ani.save_video(args.filename)
