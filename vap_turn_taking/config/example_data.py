@@ -11,7 +11,7 @@ metric_kwargs = dict(
     dur=0.2,  # int, duration off silence (shift/hold) used for evaluating\
     pre_label_dur=0.4,  # int, frames prior to Shift-silence for prediction on-active shift
     onset_dur=0.2,
-    min_context=0,
+    min_context=3,
 )
 hs_kwargs = dict(
     post_onset_shift=1,

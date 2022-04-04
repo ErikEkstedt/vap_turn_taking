@@ -1,11 +1,13 @@
 # VAP: Voice Activity Projection
 
 
-Voice Activity Projection module
+Voice Activity Projection module used in the paper [Voice Activity Projection: Self-supervised Learning of Turn-taking Events]().
 
 
 ## VAP
 
+
+See section 2 of the [paper]().
 
 The Voice Acticity Projection module extract model ('discrete', 'independent',
 'comparative') VA-labels and given voice activity and model logits-outputs,
@@ -41,6 +43,8 @@ turn_taking_probs = vapper(logits, va)  # keys: "p", "p_bc"
 
 ## Events
 
+See section 3 of the [paper]().
+
 The module which extract events from a Voice Activity representation used to
 calculate scores over particular frames of interest.
 
@@ -61,7 +65,6 @@ eventer = TurnTakingEvents(
     frame_hz=100,
 )
 
-
 # extract events from binary voice activity features
 events = eventer(va, max_frame=None)
 
@@ -79,11 +82,46 @@ events = eventer(va, max_frame=None)
 # ]
 ```
 
+Where the `event_kwargs` can be
+
+```python
+# Configs for Events
+metric_kwargs = dict(
+    pad=0,  # int, pad on silence (shift/hold) onset used for evaluating\
+    dur=0.2,  # int, duration off silence (shift/hold) used for evaluating\
+    pre_label_dur=0.4,  # int, frames prior to Shift-silence for prediction on-active shift
+    onset_dur=0.2,
+    min_context=3,
+)
+hs_kwargs = dict(
+    post_onset_shift=1,
+    pre_offset_shift=1,
+    post_onset_hold=1,
+    pre_offset_hold=1,
+    non_shift_horizon=2,
+    metric_pad=metric_kwargs["pad"],
+    metric_dur=metric_kwargs["dur"],
+    metric_pre_label_dur=metric_kwargs["pre_label_dur"],
+    metric_onset_dur=metric_kwargs["onset_dur"],
+)
+bc_kwargs = dict(
+    max_duration_frames=1,
+    pre_silence_frames=1,
+    post_silence_frames=1,
+    min_duration_frames=metric_kwargs["onset_dur"],
+    metric_dur_frames=metric_kwargs["onset_dur"],
+    metric_pre_label_dur=metric_kwargs["pre_label_dur"],
+)
+event_conf = {"hs": hs_kwargs, "bc": bc_kwargs, "metric": metric_kwargs}
+```
+
 
 ## Metrics
 
+See section 3 of the [paper]().
+
 Calculates metrics during training/evaluation given the `turn_taking_probs`
-from the `VAP`+model-output and the events from `TurnTakingEvents`.
+from the `VAP`+model-output and the events from `TurnTakingEvents`. Built using [torchmetrics](https://torchmetrics.readthedocs.io/en/latest/).
 
 ```python
 from vap_turn_taking import TurnTakingMetrics
@@ -103,16 +141,27 @@ metric = TurnTakingMetrics(
     frame_hz=100,
 )
 
+# Forward pass through a model, extract events, extract turn-taking probabilites
+logits = model(INPUTS)
 events = eventer(va, max_frame=None)
 turn_taking_probs = vapper(logits, va)  # keys: "p", "p_bc"
 
-# Update
+# Update metrics
 metric.update(
     p=turn_taking_probs["p"],
     bc_pred_probs=turn_taking_probs.get("bc_prediction", None),
     events=events,
 )
 
-# Compute
+# Compute: finalize/aggregates the scores (usually used after epoch is finished)
 result = metric.compute()
+
+# Resets the metrics (usually used before starting a new epoch)
+result = metric.reset()
+```
+
+## Citation
+
+```latex
+TBA
 ```
