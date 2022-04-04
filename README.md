@@ -4,6 +4,16 @@
 Voice Activity Projection module used in the paper [Voice Activity Projection: Self-supervised Learning of Turn-taking Events]().
 
 
+## Installation
+
+Install `vap_turn_taking`
+
+* preferably using an environment [miniconda](https://docs.conda.io/en/latest/miniconda.html)
+* Including a working installation of [pytorch](https://pytorch.org/)
+* [Optional] (for videos) Install FFMPEG: `conda install -c conda-forge ffmpeg`
+* Install dependencies: `pip install -r requirements.txt`
+* Install package: `pip install -e . `
+
 ## VAP
 
 
