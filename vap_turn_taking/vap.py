@@ -49,20 +49,6 @@ def probs_ind_backchannel(probs):
     return bc_pred
 
 
-def sort_idx(x):
-    if x.ndim == 1:
-        x, _ = x.sort()
-    elif x.ndim == 2:
-        if x.shape[0] == 2:
-            a, _ = x[0].sort()
-            b, _ = x[1].sort()
-            x = torch.stack((a, b))
-        else:
-            x, _ = x[0].sort()
-            x = x.unsqueeze(0)
-    return x
-
-
 def bin_times_to_frames(bin_times, frame_hz):
     bt = torch.tensor(bin_times)
     return (bt * frame_hz).long().tolist()
@@ -311,6 +297,19 @@ class ActivityEmb(nn.Module):
         subset_active = oh_to_prob(oh[..., 2:])
         return subset_silence, subset_active
 
+    def sort_idx(self, x):
+        if x.ndim == 1:
+            x, _ = x.sort()
+        elif x.ndim == 2:
+            if x.shape[0] == 2:
+                a, _ = x[0].sort()
+                b, _ = x[1].sort()
+                x = torch.stack((a, b))
+            else:
+                x, _ = x[0].sort()
+                x = x.unsqueeze(0)
+        return x
+
     def init_subset_silence(self):
         """
         During mutual silences we wish to infer which speaker the model deems most likely.
@@ -329,7 +328,7 @@ class ActivityEmb(nn.Module):
         # combine
         shift_oh = WindowHelper.combine_speakers(active, non_active, mirror=True)
         shift = self.onehot_to_idx(shift_oh)
-        shift = sort_idx(shift)
+        shift = self.sort_idx(shift)
 
         # symmetric, this is strictly unneccessary but done for convenience and to be similar
         # to 'get_on_activity_shift' where we actually have asymmetric classes for hold/shift
@@ -343,14 +342,14 @@ class ActivityEmb(nn.Module):
         nav = WindowHelper.on_activity_change_mono(self.n_bins, min_active=2)
         shift_oh = WindowHelper.combine_speakers(nav, eos, mirror=True)
         shift = self.onehot_to_idx(shift_oh)
-        shift = sort_idx(shift)
+        shift = self.sort_idx(shift)
 
         # Don't shift subset
         eos = WindowHelper.on_activity_change_mono(self.n_bins, min_active=2)
         zero = torch.zeros((1, self.n_bins))
         hold_oh = WindowHelper.combine_speakers(zero, eos, mirror=True)
         hold = self.onehot_to_idx(hold_oh)
-        hold = sort_idx(hold)
+        hold = self.sort_idx(hold)
         return shift, hold
 
     def init_subset_backchannel(self, n=4):

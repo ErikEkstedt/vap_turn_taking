@@ -458,3 +458,23 @@ def main_old():
 
 if __name__ == "__main__":
     from vap_turn_taking.config.example_data import example, event_conf
+
+    metric = TurnTakingMetrics(
+        hs_kwargs=event_conf["hs"],
+        bc_kwargs=event_conf["bc"],
+        metric_kwargs=event_conf["metric"],
+        bc_pred_pr_curve=True,
+        shift_pred_pr_curve=True,
+        long_short_pr_curve=True,
+        frame_hz=100,
+    )
+
+    # Update
+    metric.update(
+        p=turn_taking_probs["p"],
+        bc_pred_probs=turn_taking_probs.get("bc_prediction", None),
+        events=events,
+    )
+
+    # Compute
+    result = metric.compute()
