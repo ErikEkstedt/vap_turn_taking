@@ -1,3 +1,6 @@
+from os.path import dirname
+from os import makedirs
+
 import torch
 import torchaudio
 import subprocess
@@ -242,6 +245,9 @@ class VAPanimation:
         tmp_wav_path = "/tmp/vap_video_audio.wav"
         n_frames = self.p.shape[0] - self.center
 
+        if len(dirname(path)) > 0:
+            makedirs(dirname(path), exist_ok=True)
+
         sample_offset = int(self.sample_rate * self.center / self.frame_hz)
 
         # SAVE tmp waveform
@@ -260,6 +266,7 @@ class VAPanimation:
             for step in tqdm(range(0, n_frames, self.frame_step)):
                 _ = ani.update(step)
                 moviewriter.grab_frame()
+
         self.ffmpeg_call(path, tmp_video_path, tmp_wav_path)
 
 
