@@ -262,9 +262,9 @@ class VAPanimation:
             fps=self.fps  # , codec="libopenh264", extra_args=["-threads", "16"]
         )
 
-        with moviewriter.saving(ani.fig, tmp_video_path, dpi=self.dpi):
+        with moviewriter.saving(self.fig, tmp_video_path, dpi=self.dpi):
             for step in tqdm(range(0, n_frames, self.frame_step)):
-                _ = ani.update(step)
+                _ = self.update(step)
                 moviewriter.grab_frame()
 
         self.ffmpeg_call(path, tmp_video_path, tmp_wav_path)
