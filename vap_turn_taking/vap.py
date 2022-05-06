@@ -469,6 +469,7 @@ class VAP(nn.Module, Probabilites):
         self.emb = ActivityEmb(bin_times, frame_hz)
         self.vap_label = VAPLabel(bin_times, frame_hz, threshold_ratio)
         self.horizon = torch.tensor(self.bin_times).sum(0).item()
+        self.horizon_frames = int(self.horizon * frame_hz)
         self.pre_frames = pre_frames
 
     @property

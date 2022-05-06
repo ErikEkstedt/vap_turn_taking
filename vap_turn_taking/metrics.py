@@ -44,6 +44,9 @@ class F1_Hold_Shift(Metric):
         f1 = tp / (tp + 0.5 * (fp + fn) + EPS)
         return f1, precision, recall
 
+    def reset(self):
+        self.stat_scores.reset()
+
     def compute(self):
         hold, shift = self.stat_scores.compute()
 
@@ -273,6 +276,21 @@ class TurnTakingMetrics(Metric):
 
             if self.pr_curve_bc_pred:
                 self.bc_pred_pr.update(probs, labels)
+
+    def reset(self):
+        super().reset()
+        self.hs.reset()
+        self.predict_shift.reset()
+        self.short_long.reset()
+        self.predict_backchannel.reset()
+        if self.pr_curve_bc_pred:
+            self.bc_pred_pr.reset()
+
+        if self.pr_curve_shift_pred:
+            self.shift_pred_pr.reset()
+
+        if self.pr_curve_long_short:
+            self.long_short_pr.reset()
 
     def compute(self):
         f1_hs = self.hs.compute()
