@@ -2,6 +2,7 @@ import pytest
 
 import torch
 import vap_turn_taking.functional as VF
+from vap_turn_taking.utils import vad_list_to_onehot
 
 
 @pytest.fixture
@@ -204,3 +205,54 @@ def test_shift_hold_batch(data):
     assert (
         len(holds) == batch_size
     ), f"not all HOLD samples are included batch_size is off"
+
+
+@pytest.mark.functional
+def test_backchannel(data):
+    pre_cond_frames = 50
+    post_cond_frames = 50
+    min_context_frames = 150
+    max_bc_frames = 50
+    max_frame = 500
+    # vad = data["bc"]["vad"][0]  # (n_frames, 2)
+
+    import matplotlib.pyplot as plt
+    from vap_turn_taking.plot_utils import plot_vad_oh
+
+    vad_lists = [
+        [[[2, 4], [7, 9]], [[4.6, 5.5]]],
+        [[[2, 4]], [[4.6, 5.5], [7, 9]]],  # not bc with filleed vad
+        [[[2, 4]], [[4.6, 5.5]]],  # no activity after (can still be bc)
+        [[[2, 4], [6.8, 7.1]], [[4.6, 5.5], [7, 9]]],  # not bc with filleed vad
+    ]
+    n_bc = [1, 0, 1, 2]
+
+    for vad_list, N in zip(vad_lists, n_bc):
+        vad = vad_list_to_onehot(
+            vad_list, hop_time=0.02, duration=11.99, channel_last=True
+        )
+        backchannels = VF.backchannel_regions(
+            vad,
+            pre_cond_frames=pre_cond_frames,
+            post_cond_frames=post_cond_frames,
+            min_context_frames=min_context_frames,
+            max_bc_frames=max_bc_frames,
+            max_frame=max_frame,
+        )
+        # ds = VF.get_dialog_states(vad)
+        # filled_vad = VF.fill_pauses(vad)
+        # fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
+        # _ = plot_vad_oh(vad, ax=ax)
+        # _ = plot_vad_oh(filled_vad, ax=ax1)
+        # ax.axvline(min_context_frames, linewidth=4, color="k")
+        # ax.axvline(max_frame, linewidth=4, color="k")
+        # for bc_start, bc_end, speaker in backchannels:
+        #     ymin = 0
+        #     ymax = 1
+        #     if speaker == 1:
+        #         ymin = -1
+        #         ymax = 0
+        #     ax.vlines(bc_start, ymin=ymin, ymax=ymax, linewidth=4, color="g")
+        #     ax.vlines(bc_end, ymin=ymin, ymax=ymax, linewidth=4, color="r")
+        # plt.show()
+        assert len(backchannels) == N, "Wrong number of backchannels found"

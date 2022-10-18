@@ -6,6 +6,7 @@ from typing import Tuple, List, Optional
 TRIAD_SHIFT: torch.Tensor = torch.tensor([[3, 1, 0], [0, 1, 3]])  # on Silence
 TRIAD_SHIFT_OVERLAP: torch.Tensor = torch.tensor([[3, 2, 0], [0, 2, 3]])
 TRIAD_HOLD: torch.Tensor = torch.tensor([[0, 1, 0], [3, 1, 3]])  # on silence
+TRIAD_BC: torch.Tensor = torch.tensor([0, 1, 0])
 
 # Dialog states meaning
 STATE_ONLY_A: int = 0
@@ -141,7 +142,7 @@ def get_region(
     min_silence_frames: int,
     min_context_frames: int,
     max_frame: int,
-) -> List[Tuple[int, int]]:
+) -> List[Tuple[int, int, int]]:
     """
     get regions defined by `triad_label`
     """
@@ -220,7 +221,7 @@ def get_region(
         ################################################
         # ALL CONDITIONS MET
         ################################################
-        region.append((sil_start.item(), onset_start.item()))
+        region.append((sil_start.item(), onset_start.item(), next_speaker))
     return region
 
 
@@ -232,7 +233,7 @@ def hold_shift_regions(
     min_silence_frames: int,
     min_context_frames: int,
     max_frame: int,
-) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
     assert vad.ndim == 2, f"expects vad of shape (n_frames, 2) but got {vad.shape}."
     assert ds.ndim == 1, f"expects ds of shape (n_frames, ) but got {ds.shape}."
 
@@ -272,3 +273,68 @@ def hold_shift_regions(
         max_frame=max_frame,
     )
     return shifts, holds
+
+
+def backchannel_regions(
+    vad: torch.Tensor,
+    pre_cond_frames: int,
+    post_cond_frames: int,
+    min_context_frames: int,
+    max_bc_frames: int,
+    max_frame: int,
+):
+    assert vad.ndim == 2, f"expects vad of shape (n_frames, 2) but got {vad.shape}."
+
+    ds = get_dialog_states(vad)
+    filled_vad = fill_pauses(vad, ds)
+
+    backchannels = []
+    for speaker in [0, 1]:
+        start_of, duration_of, states = find_island_idx_len(filled_vad[..., speaker])
+        if len(states) < 3:
+            continue
+        triads = states.unfold(0, size=3, step=1)
+        steps = torch.where((triads == TRIAD_BC.unsqueeze(0)).sum(-1) == 3)[0]
+        if len(steps) == 0:
+            continue
+        for pre_silence in steps:
+            bc = pre_silence + 1
+            post_silence = pre_silence + 2
+            ################################################
+            # MINIMAL CONTEXT CONDITION
+            ################################################
+            if start_of[bc] < min_context_frames:
+                # print("Minimal context")
+                continue
+            ################################################
+            # MAXIMAL FRAME CONDITION
+            ################################################
+            if start_of[bc] >= max_frame:
+                # print("Max frame")
+                continue
+            ################################################
+            # MINIMAL DURATION CONDITION
+            ################################################
+            # Check bc duration
+            if duration_of[bc] > max_bc_frames:
+                # print("Too Long")
+                continue
+            ################################################
+            # PRE CONDITION: No previous activity from bc-speaker
+            ################################################
+            if duration_of[pre_silence] < pre_cond_frames:
+                # print('not enough silence PRIOR to "bc"')
+                continue
+            ################################################
+            # POST CONDITION: No post activity from bc-speaker
+            ################################################
+            if duration_of[post_silence] < post_cond_frames:
+                # print('not enough silence POST to "bc"')
+                continue
+            ################################################
+            # PRE OTHER CONDITION
+            ################################################
+            # Is the other speakr active before this segment?
+            backchannels.append((start_of[bc], start_of[post_silence], speaker))
+
+    return backchannels

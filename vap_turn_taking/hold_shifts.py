@@ -448,27 +448,27 @@ class HoldShiftNew:
         self.max_time = max_time
 
         # Frames
-        self.pre_cond_frames = time_to_frames(pre_cond_time, frame_hz)
-        self.post_cond_frames = time_to_frames(post_cond_time, frame_hz)
-        self.min_silence_frames = time_to_frames(min_silence_time, frame_hz)
-        self.min_context_frames = time_to_frames(min_context_time, frame_hz)
+        self.pre_cond_frame = time_to_frames(pre_cond_time, frame_hz)
+        self.post_cond_frame = time_to_frames(post_cond_time, frame_hz)
+        self.min_silence_frame = time_to_frames(min_silence_time, frame_hz)
+        self.min_context_frame = time_to_frames(min_context_time, frame_hz)
         self.max_frame = time_to_frames(max_time, frame_hz)
 
     def __repr__(self) -> str:
         s = "HoldShift"
         s += "\n---------"
         s += f"\n  Time:"
-        s += f"\n\tpre_cond_time    = {self.pre_cond_time}s"
-        s += f"\n\tpost_cond_time   = {self.post_cond_time}s"
-        s += f"\n\tmin_silence_time = {self.min_silence_time}s"
-        s += f"\n\tmin_context_time = {self.min_context_time}s"
-        s += f"\n\tmax_time         = {self.max_time}s"
+        s += f"\n\tpre_cond_time     = {self.pre_cond_time}s"
+        s += f"\n\tpost_cond_time    = {self.post_cond_time}s"
+        s += f"\n\tmin_silence_time  = {self.min_silence_time}s"
+        s += f"\n\tmin_context_time  = {self.min_context_time}s"
+        s += f"\n\tmax_time          = {self.max_time}s"
         s += f"\n  Frame:"
-        s += f"\n\tpre_cond_time    = {self.pre_cond_frames}"
-        s += f"\n\tpost_cond_time   = {self.post_cond_frames}"
-        s += f"\n\tmin_silence_time = {self.min_silence_frames}"
-        s += f"\n\tmin_context_time = {self.min_context_frames}"
-        s += f"\n\tmax_time         = {self.max_frame}"
+        s += f"\n\tpre_cond_frame    = {self.pre_cond_frame}"
+        s += f"\n\tpost_cond_frame   = {self.post_cond_frame}"
+        s += f"\n\tmin_silence_frame = {self.min_silence_frame}"
+        s += f"\n\tmin_context_frame = {self.min_context_frame}"
+        s += f"\n\tmax_frame         = {self.max_frame}"
         return s
 
     def __call__(self, vad: torch.Tensor) -> Dict[str, List[List[Tuple[int, int]]]]:
@@ -484,10 +484,10 @@ class HoldShiftNew:
             tmp_shifts, tmp_holds = VF.hold_shift_regions(
                 vad=vad[b],
                 ds=ds,
-                pre_cond_frames=self.pre_cond_frames,
-                post_cond_frames=self.post_cond_frames,
-                min_silence_frames=self.min_silence_frames,
-                min_context_frames=self.min_context_frames,
+                pre_cond_frames=self.pre_cond_frame,
+                post_cond_frames=self.post_cond_frame,
+                min_silence_frames=self.min_silence_frame,
+                min_context_frames=self.min_context_frame,
                 max_frame=self.max_frame,
             )
             shifts.append(tmp_shifts)
@@ -529,7 +529,7 @@ def _old_main():
     plt.pause(0.1)
 
 
-def _time_approaches():
+def _time_comparison():
     import timeit
     from vap_turn_taking.config.example_data import event_conf_frames
 
@@ -541,11 +541,13 @@ def _time_approaches():
             data["bc"]["vad"],
         )
     )
+    vad = torch.cat([vad] * 10)
+
     hs_kwargs = event_conf_frames["hs"]
     HS_OLD = HoldShift(**hs_kwargs)
     HS = HoldShiftNew()
-    old = timeit.timeit("HS_OLD(vad)", globals=globals(), number=1000)
-    new = timeit.timeit("HS(vad)", globals=globals(), number=1000)
+    old = timeit.timeit("HS_OLD(vad)", globals=globals(), number=200)
+    new = timeit.timeit("HS(vad)", globals=globals(), number=200)
     print("Old: ", old)
     print("New: ", new)
     if old > new:
@@ -577,7 +579,7 @@ if __name__ == "__main__":
         holds = sh_events["hold"][b]
         fig, ax = plt.subplots(1, 1, figsize=(9, 6))
         _ = plot_vad_oh(vad[b], ax=ax)
-        ax.axvline(HS.min_context_frames, linewidth=4, color="k")
+        ax.axvline(HS.min_context_frame, linewidth=4, color="k")
         ax.axvline(HS.max_frame, linewidth=4, color="k")
         for start, end in shifts:
             ax.axvline(start, linewidth=2, color="g")

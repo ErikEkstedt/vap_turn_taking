@@ -1,7 +1,7 @@
 import torch
 
 import vap_turn_taking.functional as VF
-from vap_turn_taking.utils import get_last_speaker
+from vap_turn_taking.utils import time_to_frames, get_last_speaker
 
 
 def find_isolated_within(vad, prefix_frames, max_duration_frames, suffix_frames):
@@ -160,11 +160,70 @@ class Backchannel:
         return {"backchannel": bc_oh, "pre_backchannel": pre_bc}
 
 
-if __name__ == "__main__":
+class BackchannelNew:
+    def __init__(
+        self,
+        pre_cond_time: float = 1.0,
+        post_cond_time: float = 1.0,
+        min_context_time: float = 3.0,
+        max_bc_time: float = 1.0,
+        max_time: float = 10.0,
+        frame_hz: int = 50,
+    ):
+        self.pre_cond_time = pre_cond_time
+        self.post_cond_time = post_cond_time
+        self.min_context_time = min_context_time
+        self.max_bc_time = max_bc_time
+        self.max_time = max_time
+
+        self.pre_cond_frame = time_to_frames(pre_cond_time, frame_hz)
+        self.post_cond_frame = time_to_frames(post_cond_time, frame_hz)
+        self.min_context_frame = time_to_frames(min_context_time, frame_hz)
+        self.max_bc_frame = time_to_frames(max_bc_time, frame_hz)
+        self.max_frame = time_to_frames(max_time, frame_hz)
+
+    def __repr__(self) -> str:
+        s = "Backhannel"
+        s += "\n----------"
+        s += f"\n  Time:"
+        s += f"\n\tpre_cond_time    = {self.pre_cond_time}s"
+        s += f"\n\tpost_cond_time   = {self.post_cond_time}s"
+        s += f"\n\tmax_bc_time      = {self.max_bc_time}s"
+        s += f"\n\tmin_context_time = {self.min_context_time}s"
+        s += f"\n\tmax_time         = {self.max_time}s"
+        s += f"\n  Frame:"
+        s += f"\n\tpre_cond_frame    = {self.pre_cond_frame}"
+        s += f"\n\tpost_cond_frame   = {self.post_cond_frame}"
+        s += f"\n\tmax_bc_frame      = {self.max_bc_frame}"
+        s += f"\n\tmin_context_frame = {self.min_context_frame}"
+        s += f"\n\tmax_frame         = {self.max_frame}"
+        return s
+
+    def __call__(self, vad: torch.Tensor):
+
+        batch_size = vad.shape[0]
+
+        backchannels = []
+        for b in range(batch_size):
+            sample_bc = VF.backchannel_regions(
+                vad[b],
+                pre_cond_frames=self.pre_cond_frame,
+                post_cond_frames=self.post_cond_frame,
+                min_context_frames=self.min_context_frame,
+                max_bc_frames=self.max_bc_frame,
+                max_frame=self.max_frame,
+            )
+            backchannels.append(sample_bc)
+        return {"backchannel": backchannels}
+
+
+def _old_main():
     import matplotlib.pyplot as plt
+    from vap_turn_taking.config.example_data import event_conf_frames
     from vap_turn_taking.plot_utils import plot_vad_oh
 
-    BS = Backhannel(**bs_dict)
+    bc_dict = event_conf_frames["bc"]
+    BS = Backchannel(**bc_dict)
     tt_bc = BS(va)
 
     (tt_bc["backchannel"] != bc).sum()
@@ -188,3 +247,37 @@ if __name__ == "__main__":
         if b == vad.shape[0]:
             break
     plt.pause(0.1)
+
+
+def _time_comparison():
+    import timeit
+    from vap_turn_taking.config.example_data import event_conf_frames
+
+    data = torch.load("example/vap_data.pt")
+    vad = torch.cat(
+        (
+            data["shift"]["vad"],
+            data["only_hold"]["vad"],
+            data["bc"]["vad"],
+        )
+    )
+    vad = torch.cat([vad] * 10)
+
+    bc_kwargs = event_conf_frames["bc"]
+    BC_OLD = Backchannel(**bc_kwargs)
+    BC = BackchannelNew()
+    old = timeit.timeit("BC_OLD(vad)", globals=globals(), number=200)
+    new = timeit.timeit("BC(vad)", globals=globals(), number=200)
+    print("Old: ", old)
+    print("New: ", new)
+    if old > new:
+        print(f"NEW approach is {old/new} times faster!")
+    else:
+        print(f"OLD approach is {new/old} times faster!")
+
+
+if __name__ == "__main__":
+
+    BC = BackchannelNew()
+    vad = torch.load("example/vap_data.pt")["bc"]["vad"]
+    bcs = BC(vad)
