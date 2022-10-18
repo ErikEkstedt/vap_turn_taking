@@ -166,20 +166,20 @@ class BackchannelNew:
         pre_cond_time: float = 1.0,
         post_cond_time: float = 1.0,
         min_context_time: float = 3.0,
-        max_bc_time: float = 1.0,
+        max_bc_duration: float = 1.0,
         max_time: float = 10.0,
         frame_hz: int = 50,
     ):
         self.pre_cond_time = pre_cond_time
         self.post_cond_time = post_cond_time
         self.min_context_time = min_context_time
-        self.max_bc_time = max_bc_time
+        self.max_bc_time = max_bc_duration
         self.max_time = max_time
 
         self.pre_cond_frame = time_to_frames(pre_cond_time, frame_hz)
         self.post_cond_frame = time_to_frames(post_cond_time, frame_hz)
         self.min_context_frame = time_to_frames(min_context_time, frame_hz)
-        self.max_bc_frame = time_to_frames(max_bc_time, frame_hz)
+        self.max_bc_frame = time_to_frames(max_bc_duration, frame_hz)
         self.max_frame = time_to_frames(max_time, frame_hz)
 
     def __repr__(self) -> str:
@@ -200,7 +200,6 @@ class BackchannelNew:
         return s
 
     def __call__(self, vad: torch.Tensor):
-
         batch_size = vad.shape[0]
 
         backchannels = []

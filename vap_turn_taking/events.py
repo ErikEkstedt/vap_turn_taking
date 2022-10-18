@@ -1,8 +1,8 @@
 import torch
 import numpy.random as np_random
 
-from vap_turn_taking.backchannel import Backchannel
-from vap_turn_taking.hold_shifts import HoldShift
+from vap_turn_taking.backchannel import Backchannel, BackchannelNew
+from vap_turn_taking.hold_shifts import HoldShift, HoldShiftNew
 from vap_turn_taking.utils import (
     time_to_frames,
     find_island_idx_len,
@@ -17,7 +17,7 @@ class TurnTakingEvents:
         hs_kwargs,
         bc_kwargs,
         metric_kwargs,
-        frame_hz=100,
+        frame_hz=50,
     ):
         self.frame_hz = frame_hz
 
@@ -226,7 +226,58 @@ class TurnTakingEvents:
         }
 
 
-if __name__ == "__main__":
+class TurnTakingEventsNew:
+    def __init__(
+        self,
+        hs_pre_cond_time: float = 1.0,
+        hs_post_cond_time: float = 1.0,
+        bc_pre_cond_time: float = 1.0,
+        bc_post_cond_time: float = 1.0,
+        bc_max_duration: float = 1.0,
+        min_context_time: float = 3,
+        metric_time: float = 0.2,
+        metric_pad_time: float = 0.05,
+        max_time: int = 10,
+        frame_hz=50,
+    ):
+        self.frame_hz = frame_hz
+        self.min_silence_time = metric_time
+        self.metric_time = metric_time
+        self.metric_pad_time = metric_pad_time
+
+        self.HS = HoldShiftNew(
+            pre_cond_time=hs_pre_cond_time,
+            post_cond_time=hs_post_cond_time,
+            min_silence_time=metric_time,
+            min_context_time=min_context_time,
+            max_time=max_time,
+            frame_hz=frame_hz,
+        )
+
+        self.BC = BackchannelNew(
+            pre_cond_time=bc_pre_cond_time,
+            post_cond_time=bc_post_cond_time,
+            max_bc_duration=bc_max_duration,
+            max_time=max_time,
+            frame_hz=frame_hz,
+        )
+
+    def __repr__(self) -> str:
+        s = "TurnTakingEvents\n\n"
+        s += self.BC.__repr__()
+        s += self.HS.__repr__()
+        return s
+
+    def __call__(self, vad):
+        ret = {}
+        bc = self.BC(vad)
+        ret.update(bc)
+        hs = self.HS(vad)
+        ret.update(hs)
+        return ret
+
+
+def _old_main():
     import matplotlib.pyplot as plt
     from vap_turn_taking.config.example_data import example, event_conf
     from vap_turn_taking.plot_utils import plot_vad_oh, plot_event
@@ -269,3 +320,51 @@ if __name__ == "__main__":
     # _, ax = plot_event(tt['long_shift_onset'][0], color=['r', 'r'], alpha=0.2, ax=ax)
     # _, ax = plot_event(events["non_shift"][0], color=["r", "r"], alpha=0.2, ax=ax)
     plt.pause(0.1)
+
+
+def _time_comparison():
+
+    import timeit
+    from vap_turn_taking.config.example_data import event_conf
+
+    data = torch.load("example/vap_data.pt")
+    vad = torch.cat(
+        (
+            data["shift"]["vad"],
+            data["only_hold"]["vad"],
+            data["bc"]["vad"],
+        )
+    )
+    vad = torch.cat([vad] * 10)
+    eventerOld = TurnTakingEvents(
+        hs_kwargs=event_conf["hs"],
+        bc_kwargs=event_conf["bc"],
+        metric_kwargs=event_conf["metric"],
+        frame_hz=50,
+    )
+    eventer = TurnTakingEventsNew()
+
+    old = timeit.timeit("eventerOld(vad)", globals=globals(), number=200)
+    new = timeit.timeit("eventer(vad)", globals=globals(), number=200)
+    print("Old: ", old)
+    print("New: ", new)
+    if old > new:
+        print(f"NEW approach is {old/new} times faster!")
+    else:
+        print(f"OLD approach is {new/old} times faster!")
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
+    data = torch.load("example/vap_data.pt")
+    vad = torch.cat(
+        (
+            data["shift"]["vad"],
+            data["only_hold"]["vad"],
+            data["bc"]["vad"],
+        )
+    )
+
+    eventer = TurnTakingEventsNew()
+    events = eventer(vad)
