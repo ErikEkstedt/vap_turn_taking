@@ -1,9 +1,8 @@
 import torch
-from vap_turn_taking.utils import (
-    find_island_idx_len,
-    get_dialog_states,
-    get_last_speaker,
-)
+from typing import Dict, List, Tuple
+
+from vap_turn_taking.utils import time_to_frames
+import vap_turn_taking.functional as VF
 
 
 class HoldShift:
@@ -142,7 +141,7 @@ class HoldShift:
 
         filled_vad = vad.clone()
         for b in range(ds.shape[0]):
-            s, d, v = find_island_idx_len(ds[b])
+            s, d, v = VF.find_island_idx_len(ds[b])
             if len(v) < 3:
                 continue
             triads = v.unfold(0, size=3, step=1)
@@ -189,7 +188,7 @@ class HoldShift:
                 (*ds.shape, 2), device=ds.device, dtype=torch.float
             )
         for b in range(ds.shape[0]):
-            s, d, v = find_island_idx_len(ds[b])
+            s, d, v = VF.find_island_idx_len(ds[b])
 
             if len(v) < 3:
                 continue
@@ -362,7 +361,7 @@ class HoldShift:
     ):
 
         if ds is None:
-            ds = get_dialog_states(vad)
+            ds = VF.get_dialog_states(vad)
 
         if vad.device != self.hold_template.device:
             self.shift_template = self.shift_template.to(vad.device)
@@ -406,6 +405,8 @@ class HoldShift:
             min_context=min_context,
         )
 
+        from vap_turn_taking.utils import get_last_speaker
+
         last_speaker = get_last_speaker(vad, ds)
         non_shift_oh = self.non_shifts(
             vad,
@@ -428,7 +429,73 @@ class HoldShift:
         }
 
 
-if __name__ == "__main__":
+class HoldShiftNew:
+    def __init__(
+        self,
+        pre_cond_time: float = 1,
+        post_cond_time: float = 1,
+        min_silence_time: float = 0.2,
+        min_context_time: float = 3,
+        max_time: int = 10,
+        frame_hz: int = 50,
+    ):
+
+        # Time
+        self.pre_cond_time = pre_cond_time
+        self.post_cond_time = post_cond_time
+        self.min_silence_time = min_silence_time
+        self.min_context_time = min_context_time
+        self.max_time = max_time
+
+        # Frames
+        self.pre_cond_frames = time_to_frames(pre_cond_time, frame_hz)
+        self.post_cond_frames = time_to_frames(post_cond_time, frame_hz)
+        self.min_silence_frames = time_to_frames(min_silence_time, frame_hz)
+        self.min_context_frames = time_to_frames(min_context_time, frame_hz)
+        self.max_frame = time_to_frames(max_time, frame_hz)
+
+    def __repr__(self) -> str:
+        s = "HoldShift"
+        s += "\n---------"
+        s += f"\n  Time:"
+        s += f"\n\tpre_cond_time    = {self.pre_cond_time}s"
+        s += f"\n\tpost_cond_time   = {self.post_cond_time}s"
+        s += f"\n\tmin_silence_time = {self.min_silence_time}s"
+        s += f"\n\tmin_context_time = {self.min_context_time}s"
+        s += f"\n\tmax_time         = {self.max_time}s"
+        s += f"\n  Frame:"
+        s += f"\n\tpre_cond_time    = {self.pre_cond_frames}"
+        s += f"\n\tpost_cond_time   = {self.post_cond_frames}"
+        s += f"\n\tmin_silence_time = {self.min_silence_frames}"
+        s += f"\n\tmin_context_time = {self.min_context_frames}"
+        s += f"\n\tmax_time         = {self.max_frame}"
+        return s
+
+    def __call__(self, vad: torch.Tensor) -> Dict[str, List[List[Tuple[int, int]]]]:
+        assert (
+            vad.ndim == 3
+        ), f"Expected vad.ndim=3 (B, N_FRAMES, 2) but got {vad.shape}"
+
+        batch_size = vad.shape[0]
+
+        shifts, holds = [], []
+        for b in range(batch_size):
+            ds = VF.get_dialog_states(vad[b])
+            tmp_shifts, tmp_holds = VF.hold_shift_regions(
+                vad=vad[b],
+                ds=ds,
+                pre_cond_frames=self.pre_cond_frames,
+                post_cond_frames=self.post_cond_frames,
+                min_silence_frames=self.min_silence_frames,
+                min_context_frames=self.min_context_frames,
+                max_frame=self.max_frame,
+            )
+            shifts.append(tmp_shifts)
+            holds.append(tmp_holds)
+        return {"shift": shifts, "hold": holds}
+
+
+def _old_main():
     import matplotlib.pyplot as plt
     from vap_turn_taking.plot_utils import plot_vad_oh, plot_event
     from vap_turn_taking.config.example_data import event_conf_frames, example
@@ -460,3 +527,62 @@ if __name__ == "__main__":
     # _, ax = plot_event(tt['long_shift_onset'][0], color=['r', 'r'], alpha=0.2, ax=ax)
     _, ax = plot_event(tt["non_shift"][0], color=["r", "r"], alpha=0.2, ax=ax)
     plt.pause(0.1)
+
+
+def _time_approaches():
+    import timeit
+    from vap_turn_taking.config.example_data import event_conf_frames
+
+    data = torch.load("example/vap_data.pt")
+    vad = torch.cat(
+        (
+            data["shift"]["vad"],
+            data["only_hold"]["vad"],
+            data["bc"]["vad"],
+        )
+    )
+    hs_kwargs = event_conf_frames["hs"]
+    HS_OLD = HoldShift(**hs_kwargs)
+    HS = HoldShiftNew()
+    old = timeit.timeit("HS_OLD(vad)", globals=globals(), number=1000)
+    new = timeit.timeit("HS(vad)", globals=globals(), number=1000)
+    print("Old: ", old)
+    print("New: ", new)
+    if old > new:
+        print(f"NEW approach is {old/new} times faster!")
+    else:
+        print(f"OLD approach is {new/old} times faster!")
+
+
+if __name__ == "__main__":
+
+    import matplotlib.pyplot as plt
+    from vap_turn_taking.plot_utils import plot_vad_oh
+
+    data = torch.load("example/vap_data.pt")
+    vad = torch.cat(
+        (
+            data["shift"]["vad"],
+            data["only_hold"]["vad"],
+            data["bc"]["vad"],
+        )
+    )
+    batch_size = vad.shape[0]
+
+    HS = HoldShiftNew()
+    sh_events = HS(vad)
+
+    for b in range(batch_size):
+        shifts = sh_events["shift"][b]
+        holds = sh_events["hold"][b]
+        fig, ax = plt.subplots(1, 1, figsize=(9, 6))
+        _ = plot_vad_oh(vad[b], ax=ax)
+        ax.axvline(HS.min_context_frames, linewidth=4, color="k")
+        ax.axvline(HS.max_frame, linewidth=4, color="k")
+        for start, end in shifts:
+            ax.axvline(start, linewidth=2, color="g")
+            ax.axvline(end, linewidth=2, color="r")
+        for start, end in holds:
+            ax.axvline(start, linewidth=2, linestyle="dashed", color="g")
+            ax.axvline(end, linewidth=2, linestyle="dashed", color="r")
+        plt.show()

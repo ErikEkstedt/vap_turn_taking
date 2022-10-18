@@ -1,6 +1,7 @@
 import torch
-from vap_turn_taking.utils import find_island_idx_len
-from vap_turn_taking.hold_shifts import get_dialog_states, get_last_speaker
+
+import vap_turn_taking.functional as VF
+from vap_turn_taking.utils import get_last_speaker
 
 
 def find_isolated_within(vad, prefix_frames, max_duration_frames, suffix_frames):
@@ -11,7 +12,7 @@ def find_isolated_within(vad, prefix_frames, max_duration_frames, suffix_frames)
     isolated = torch.zeros_like(vad)
     for b, vad_tmp in enumerate(vad):
         for speaker in [0, 1]:
-            starts, durs, vals = find_island_idx_len(vad_tmp[..., speaker])
+            starts, durs, vals = VF.find_island_idx_len(vad_tmp[..., speaker])
             for step in range(1, len(starts) - 1):
                 # Activity condition: current step is active
                 if vals[step] == 0:
@@ -84,7 +85,7 @@ class Backchannel:
             for speaker in [0, 1]:
                 other_speaker = 0 if speaker == 1 else 1
 
-                starts, durs, vals = find_island_idx_len(vad_tmp[..., speaker])
+                starts, durs, vals = VF.find_island_idx_len(vad_tmp[..., speaker])
                 for step in range(1, len(starts) - 1):
                     # Activity condition: current step is active
                     if vals[step] == 0:
@@ -148,7 +149,7 @@ class Backchannel:
     def __call__(self, vad, last_speaker=None, ds=None, max_frame=None, min_context=0):
 
         if ds is None:
-            ds = get_dialog_states(vad)
+            ds = VF.get_dialog_states(vad)
 
         if last_speaker is None:
             last_speaker = get_last_speaker(vad, ds)

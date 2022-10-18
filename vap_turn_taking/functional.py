@@ -1,9 +1,17 @@
 import torch
-
-from typing import Tuple
+from typing import Tuple, List, Optional
 
 
 # Templates
+TRIAD_SHIFT: torch.Tensor = torch.tensor([[3, 1, 0], [0, 1, 3]])  # on Silence
+TRIAD_SHIFT_OVERLAP: torch.Tensor = torch.tensor([[3, 2, 0], [0, 2, 3]])
+TRIAD_HOLD: torch.Tensor = torch.tensor([[0, 1, 0], [3, 1, 3]])  # on silence
+
+# Dialog states meaning
+STATE_ONLY_A: int = 0
+STATE_ONLY_B: int = 3
+STATE_SILENCE: int = 1
+STATE_BOTH: int = 2
 
 
 def get_dialog_states(vad: torch.Tensor) -> torch.Tensor:
@@ -48,22 +56,219 @@ def find_island_idx_len(
     return idx, dur, x[i]
 
 
-def fill_pauses(vad: torch.Tensor, ds: torch.Tensor) -> torch.Tensor:
+def fill_pauses(
+    vad: torch.Tensor,
+    ds: torch.Tensor,
+    islands: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+) -> torch.Tensor:
     assert vad.ndim == 2, "fill_pauses require ds=(n_frames, 2)"
     assert ds.ndim == 1, "fill_pauses require ds=(n_frames,)"
 
     filled_vad = vad.clone()
 
-    s, d, v = find_island_idx_len(ds)
+    if islands is None:
+        s, d, v = find_island_idx_len(ds)
+    else:
+        s, d, v = islands
 
     # less than three entries means that there are no pauses
     # requires at least: activity-from-speaker  ->  Silence   --> activity-from-speaker
     if len(v) < 3:
-        continue
+        return vad
+
     triads = v.unfold(0, size=3, step=1)
-    next_speaker, steps = torch.where((triads == template.unsqueeze(1)).sum(-1) == 3)
+    next_speaker, steps = torch.where((triads == TRIAD_HOLD.unsqueeze(1)).sum(-1) == 3)
     for ns, pre in zip(next_speaker, steps):
         cur = pre + 1
         # Fill the matching template
         filled_vad[s[cur] : s[cur] + d[cur], ns] = 1.0
     return filled_vad
+
+
+def hold_shift_regions_simple(
+    ds: torch.Tensor,
+) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """
+    Extract Holds/Shifts dirctly from ds=dialog_states without any type of condtions.
+
+    That is do not check what happes before/after the mutual silence so you get
+    holds/shifts that are solely defined on what frame the active frame before and after the silence
+    belongs to.
+    """
+    assert ds.ndim == 1, f"expects ds of shape (n_frames, ) but got {ds.shape}."
+
+    def _get_regions(
+        triads: torch.Tensor, indices: torch.Tensor, triad_label: torch.Tensor
+    ) -> List[Tuple[int, int]]:
+        """
+        All shift triads e.g. [3, 1, 0] centers on the silence segment
+        If we find a triad match at step 's' then the actual SILENCE segment
+        STARTS on the next step -> add 1
+        ENDS   on the two next step -> add 2
+        """
+        region = []
+        _, steps = torch.where((triads == triad_label.unsqueeze(1)).sum(-1) == 3)
+        for step in steps:
+            silence_start = indices[step + 1].item()  # start of
+            silence_end = indices[step + 2].item()  # add
+            region.append((silence_start, silence_end))
+        return region
+
+    indices, dur, states = find_island_idx_len(ds)
+
+    # If we have less than 3 unique dialog states
+    # then we have no valid transitions
+    if len(states) < 3:
+        return [], [], []
+
+    triads = states.unfold(0, size=3, step=1)
+
+    shifts = _get_regions(triads, indices, TRIAD_SHIFT)
+    shift_overlap = _get_regions(triads, indices, TRIAD_SHIFT_OVERLAP)
+    holds = _get_regions(triads, indices, TRIAD_HOLD)
+
+    return shifts, shift_overlap, holds
+
+
+def get_region(
+    triads: torch.Tensor,
+    filled_vad: torch.Tensor,
+    triad_label: torch.Tensor,
+    start_of: torch.Tensor,
+    duration_of: torch.Tensor,
+    pre_cond_frames: int,
+    post_cond_frames: int,
+    min_silence_frames: int,
+    min_context_frames: int,
+    max_frame: int,
+) -> List[Tuple[int, int]]:
+    """
+    get regions defined by `triad_label`
+    """
+    # check if label is hold or shift
+    # if the same speaker continues after silence -> hold
+    hold_cond = triad_label[0, 0] == triad_label[0, -1]
+    region = []
+    next_speakers, steps = torch.where(
+        (triads == triad_label.unsqueeze(1)).sum(-1) == 3
+    )
+
+    # No matches -> return
+    if len(next_speakers) == 0:
+        return []
+
+    for step, next_speaker in zip(steps, next_speakers):
+        not_next_speaker = 0 if next_speaker == 1 else 1
+        prev_speaker = next_speaker if hold_cond else not_next_speaker
+        not_prev_speaker = 0 if prev_speaker == 1 else 1
+        # All shift triads e.g. [3, 1, 0] centers on the silence segment
+        # If we find a triad match at step 's' then the actual SILENCE segment
+        # STARTS:           on the next step -> add 1
+        # ENDS/next-onset:  on the two next step -> add 2
+        silence = step + 1
+        next_onset = step + 2
+        ################################################
+        # MINIMAL CONTEXT CONDITION
+        ################################################
+        if start_of[silence] < min_context_frames:
+            continue
+        ################################################
+        # MAXIMAL FRAME CONDITION
+        ################################################
+        if start_of[silence] >= max_frame:
+            continue
+        ################################################
+        # MINIMAL SILENCE CONDITION
+        ################################################
+        # Check silence duration
+        if duration_of[silence] < min_silence_frames:
+            continue
+        ################################################
+        # PRE CONDITION: ONLY A SINGLE PREVIOUS SPEAKER
+        ################################################
+        # Check `pre_cond_frames` before start of silence
+        # to make sure only a single speaker was active
+        sil_start = start_of[silence]
+        pre_start = sil_start - pre_cond_frames
+        pre_start = pre_start if pre_start > 0 else 0
+        correct_is_active = (
+            filled_vad[pre_start:sil_start, prev_speaker].sum() == pre_cond_frames
+        )
+        if not correct_is_active:
+            continue
+        other_is_silent = filled_vad[pre_start:sil_start, not_prev_speaker].sum() == 0
+        if not other_is_silent:
+            continue
+        ################################################
+        # POST CONDITION: ONLY A SINGLE PREVIOUS SPEAKER
+        ################################################
+        # Check `post_cond_frames` after start of onset
+        # to make sure only a single speaker is to be active
+        onset_start = start_of[next_onset]
+        onset_region_end = onset_start + post_cond_frames
+        correct_is_active = (
+            filled_vad[onset_start:onset_region_end, next_speaker].sum()
+            == post_cond_frames
+        )
+        if not correct_is_active:
+            continue
+        other_is_silent = (
+            filled_vad[onset_start:onset_region_end, not_next_speaker].sum() == 0
+        )
+        if not other_is_silent:
+            continue
+        ################################################
+        # ALL CONDITIONS MET
+        ################################################
+        region.append((sil_start.item(), onset_start.item()))
+    return region
+
+
+def hold_shift_regions(
+    vad: torch.Tensor,
+    ds: torch.Tensor,
+    pre_cond_frames: int,
+    post_cond_frames: int,
+    min_silence_frames: int,
+    min_context_frames: int,
+    max_frame: int,
+) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    assert vad.ndim == 2, f"expects vad of shape (n_frames, 2) but got {vad.shape}."
+    assert ds.ndim == 1, f"expects ds of shape (n_frames, ) but got {ds.shape}."
+
+    start_of, duration_of, states = find_island_idx_len(ds)
+    filled_vad = fill_pauses(vad, ds, islands=(start_of, duration_of, states))
+
+    # If we have less than 3 unique dialog states
+    # then we have no valid transitions
+    if len(states) < 3:
+        return [], []
+
+    triads = states.unfold(0, size=3, step=1)
+
+    shifts = get_region(
+        triads=triads,
+        filled_vad=filled_vad,
+        triad_label=TRIAD_SHIFT,
+        start_of=start_of,
+        duration_of=duration_of,
+        pre_cond_frames=pre_cond_frames,
+        post_cond_frames=post_cond_frames,
+        min_silence_frames=min_silence_frames,
+        min_context_frames=min_context_frames,
+        max_frame=max_frame,
+    )
+
+    holds = get_region(
+        triads=triads,
+        filled_vad=filled_vad,
+        triad_label=TRIAD_HOLD,
+        start_of=start_of,
+        duration_of=duration_of,
+        pre_cond_frames=pre_cond_frames,
+        post_cond_frames=post_cond_frames,
+        min_silence_frames=min_silence_frames,
+        min_context_frames=min_context_frames,
+        max_frame=max_frame,
+    )
+    return shifts, holds

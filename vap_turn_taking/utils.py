@@ -3,17 +3,8 @@ import torch.nn.functional as F
 from einops import rearrange
 
 
-def time_to_frames(time, frame_hz):
-    if isinstance(time, list):
-        time = torch.tensor(time)
-
-    frame = time * frame_hz
-
-    if isinstance(frame, torch.Tensor):
-        frame = frame.long().tolist()
-    else:
-        frame = int(frame)
-
+def time_to_frames(time: float, frame_hz: int) -> int:
+    frame = int(time * frame_hz)
     return frame
 
 
