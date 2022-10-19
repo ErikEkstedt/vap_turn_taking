@@ -10,6 +10,8 @@ PRE_COND_FRAMES: int = 50
 POST_COND_FRAMES: int = 50
 PREDICTION_REGION_FRAMES: int = 25  # 0.5s
 PREDICTION_REGION_ON_ACTIVE: bool = True
+LONG_ONSET_CONDITION_FRAMES: int = 50  # 1s
+LONG_ONSET_REGION_FRAMES: int = 25  # 0.5
 MIN_CONTEXT_FRAMES: int = 150
 MIN_SILENCE_FRAMES: int = 10  # 0.2s
 MAX_BC_FRAMES: int = 50
@@ -108,6 +110,7 @@ def test_shift_hold(data):
     Test shift/hold extraction on a single sample
     """
     # Input
+
     vad = data["shift"]["vad"][0]  # (600,2)
     ds = VF.get_dialog_states(vad)
     sh = VF.hold_shift_regions(
@@ -117,6 +120,8 @@ def test_shift_hold(data):
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
         prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+        long_onset_region_frames=LONG_ONSET_REGION_FRAMES,
+        long_onset_condition_frames=LONG_ONSET_CONDITION_FRAMES,
         min_silence_frames=MIN_SILENCE_FRAMES,
         min_context_frames=MIN_CONTEXT_FRAMES,
         max_frame=MAX_FRAME,
@@ -136,6 +141,8 @@ def test_shift_hold(data):
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
         prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+        long_onset_region_frames=LONG_ONSET_REGION_FRAMES,
+        long_onset_condition_frames=LONG_ONSET_CONDITION_FRAMES,
         min_silence_frames=MIN_SILENCE_FRAMES,
         min_context_frames=MIN_CONTEXT_FRAMES,
         max_frame=MAX_FRAME,
@@ -155,6 +162,8 @@ def test_shift_hold(data):
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
         prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+        long_onset_region_frames=LONG_ONSET_REGION_FRAMES,
+        long_onset_condition_frames=LONG_ONSET_CONDITION_FRAMES,
         min_silence_frames=MIN_SILENCE_FRAMES,
         min_context_frames=MIN_CONTEXT_FRAMES,
         max_frame=MAX_FRAME,
@@ -202,6 +211,8 @@ def test_shift_hold_batch(data):
             post_cond_frames=POST_COND_FRAMES,
             prediction_region_frames=PREDICTION_REGION_FRAMES,
             prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+            long_onset_region_frames=LONG_ONSET_REGION_FRAMES,
+            long_onset_condition_frames=LONG_ONSET_CONDITION_FRAMES,
             min_silence_frames=MIN_SILENCE_FRAMES,
             min_context_frames=MIN_CONTEXT_FRAMES,
             max_frame=MAX_FRAME,
@@ -218,11 +229,6 @@ def test_shift_hold_batch(data):
 
 @pytest.mark.functional
 def test_backchannel():
-    # vad = data["bc"]["vad"][0]  # (n_frames, 2)
-
-    # import matplotlib.pyplot as plt
-    # from vap_turn_taking.plot_utils import plot_vad_oh
-
     vad_lists = [
         [[[2, 4], [7, 9]], [[4.6, 5.5]]],
         [[[2, 4]], [[4.6, 5.5], [7, 9]]],  # not bc with filleed vad
@@ -244,23 +250,6 @@ def test_backchannel():
             max_bc_frames=MAX_BC_FRAMES,
             max_frame=MAX_FRAME,
         )
-        # ds = VF.get_dialog_states(vad)
-        # filled_vad = VF.fill_pauses(vad, ds)
-        # fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
-        # _ = plot_vad_oh(vad, ax=ax)
-        # _ = plot_vad_oh(filled_vad, ax=ax1)
-        # ax.axvline(MIN_CONTEXT_FRAMES, linewidth=4, color="k")
-        # ax.axvline(MAX_FRAME, linewidth=4, color="k")
-        # # for bc_start, bc_end, speaker in backchannels['backchannel']:
-        # for bc_start, bc_end, speaker in bc["pred_backchannel"]:
-        #     ymin = 0
-        #     ymax = 1
-        #     if speaker == 1:
-        #         ymin = -1
-        #         ymax = 0
-        #     ax.vlines(bc_start, ymin=ymin, ymax=ymax, linewidth=4, color="g")
-        #     ax.vlines(bc_end, ymin=ymin, ymax=ymax, linewidth=4, color="r")
-        # plt.show()
         assert len(bc["backchannel"]) == N, "Wrong number of backchannels found"
         assert len(bc["pred_backchannel"]) == N, "Wrong number of backchannels found"
 
@@ -327,6 +316,8 @@ def test_prediction_regions(data):
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
         prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+        long_onset_region_frames=LONG_ONSET_REGION_FRAMES,
+        long_onset_condition_frames=LONG_ONSET_CONDITION_FRAMES,
         min_silence_frames=MIN_SILENCE_FRAMES,
         min_context_frames=MIN_CONTEXT_FRAMES,
         max_frame=MAX_FRAME,
@@ -349,6 +340,8 @@ def test_prediction_regions(data):
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=100,
         prediction_region_on_active=False,
+        long_onset_region_frames=LONG_ONSET_REGION_FRAMES,
+        long_onset_condition_frames=LONG_ONSET_CONDITION_FRAMES,
         min_silence_frames=MIN_SILENCE_FRAMES,
         min_context_frames=MIN_CONTEXT_FRAMES,
         max_frame=MAX_FRAME,
@@ -371,6 +364,8 @@ def test_prediction_regions(data):
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=100,
         prediction_region_on_active=True,
+        long_onset_region_frames=LONG_ONSET_REGION_FRAMES,
+        long_onset_condition_frames=LONG_ONSET_CONDITION_FRAMES,
         min_silence_frames=MIN_SILENCE_FRAMES,
         min_context_frames=MIN_CONTEXT_FRAMES,
         max_frame=MAX_FRAME,
@@ -405,3 +400,45 @@ def test_prediction_regions(data):
     assert (
         len(sh["pred_hold"]) == 0
     ), f"Number of pred-holds are incorrect {len(sh['pred_hold'])} != 0"
+
+
+@pytest.mark.functional
+def test_long_short(data):
+    vad_lists = [
+        [[[1.1, 5.0]], [[6.0, 8.0], [8.2, 9.0]]],  # one long
+        [[[1.1, 5.0]], [[6.0, 6.6], [6.9, 9.0]]],  # zero long
+        [[[1.1, 5.0], [6.5, 7.0]], [[6.0, 9]]],  # zero long
+    ]
+    long_labels = [1, 0, 0]  # number of 'long' regions in data
+    for vad_list, n_long in zip(vad_lists, long_labels):
+        vad = vad_list_to_onehot(
+            vad_list, hop_time=0.02, duration=11.99, channel_last=True
+        )
+        # vad = data["shift"]["vad"][0]
+        bc = VF.backchannel_regions(
+            vad,
+            pre_cond_frames=PRE_COND_FRAMES,
+            post_cond_frames=POST_COND_FRAMES,
+            prediction_region_frames=PREDICTION_REGION_FRAMES,
+            min_context_frames=MIN_CONTEXT_FRAMES,
+            max_bc_frames=MAX_BC_FRAMES,
+            max_frame=MAX_FRAME,
+        )
+        ds = VF.get_dialog_states(vad)
+        sh = VF.hold_shift_regions(
+            vad=vad,
+            ds=ds,
+            pre_cond_frames=PRE_COND_FRAMES,
+            post_cond_frames=POST_COND_FRAMES,
+            prediction_region_frames=PREDICTION_REGION_FRAMES,
+            prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+            long_onset_region_frames=LONG_ONSET_REGION_FRAMES,
+            long_onset_condition_frames=LONG_ONSET_CONDITION_FRAMES,
+            min_silence_frames=MIN_SILENCE_FRAMES,
+            min_context_frames=MIN_CONTEXT_FRAMES,
+            max_frame=MAX_FRAME,
+        )
+        n_long_found = len(sh["long"])
+        assert (
+            n_long_found == n_long
+        ), f"Wrong number of 'long' regions recovered {n_long_found} != {n_long}"

@@ -30,7 +30,18 @@ def test_hold_shifts_new():
         )
     )
 
-    HS = HoldShiftNew()
+    HS = HoldShiftNew(
+        pre_cond_time=1.0,
+        post_cond_time=1.0,
+        prediction_region_time=0.2,
+        prediction_region_on_active=True,
+        long_onset_condition_time=1.0,
+        long_onset_region_time=0.2,
+        min_silence_time=0.2,
+        min_context_time=3.0,
+        max_time=10.0,
+        frame_hz=50,
+    )
     hs = HS(vad)
 
     LABEL_SHIFT = [1, 0, 1]

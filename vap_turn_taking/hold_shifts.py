@@ -432,14 +432,16 @@ class HoldShift:
 class HoldShiftNew:
     def __init__(
         self,
-        pre_cond_time: float = 1,
-        post_cond_time: float = 1,
-        prediction_region_time: float = 0.2,
-        prediction_region_on_active: bool = True,
-        min_silence_time: float = 0.2,
-        min_context_time: float = 3,
-        max_time: int = 10,
-        frame_hz: int = 50,
+        pre_cond_time: float,
+        post_cond_time: float,
+        prediction_region_time: float,
+        prediction_region_on_active: bool,
+        long_onset_condition_time: float,
+        long_onset_region_time: float,
+        min_silence_time: float,
+        min_context_time: float,
+        max_time: float,
+        frame_hz: int,
     ):
 
         # Time
@@ -453,6 +455,11 @@ class HoldShiftNew:
         self.pre_cond_frame = time_to_frames(pre_cond_time, frame_hz)
         self.post_cond_frame = time_to_frames(post_cond_time, frame_hz)
         self.prediction_region_frame = time_to_frames(prediction_region_time, frame_hz)
+        self.prediction_region_on_active = prediction_region_on_active
+        self.long_onset_condition_frames = time_to_frames(
+            long_onset_condition_time, frame_hz
+        )
+        self.long_onset_region_frames = time_to_frames(long_onset_region_time, frame_hz)
         self.prediction_region_on_active = prediction_region_on_active
         self.min_silence_frame = time_to_frames(min_silence_time, frame_hz)
         self.min_context_frame = time_to_frames(min_context_time, frame_hz)
@@ -475,6 +482,7 @@ class HoldShiftNew:
         s += f"\n\tmax_frame         = {self.max_frame}"
         return s
 
+    @torch.no_grad()
     def __call__(
         self, vad: torch.Tensor
     ) -> Dict[str, List[List[Tuple[int, int, int]]]]:
@@ -484,7 +492,7 @@ class HoldShiftNew:
 
         batch_size = vad.shape[0]
 
-        shift, hold = [], []
+        shift, hold, long = [], [], []
         pred_shift, pred_hold = [], []
         for b in range(batch_size):
             ds = VF.get_dialog_states(vad[b])
@@ -495,17 +503,21 @@ class HoldShiftNew:
                 post_cond_frames=self.post_cond_frame,
                 prediction_region_frames=self.prediction_region_frame,
                 prediction_region_on_active=self.prediction_region_on_active,
+                long_onset_region_frames=self.long_onset_region_frames,
+                long_onset_condition_frames=self.long_onset_condition_frames,
                 min_silence_frames=self.min_silence_frame,
                 min_context_frames=self.min_context_frame,
                 max_frame=self.max_frame,
             )
             shift.append(tmp_sh["shift"])
             hold.append(tmp_sh["hold"])
+            long.append(tmp_sh["long"])
             pred_shift.append(tmp_sh["pred_shift"])
             pred_hold.append(tmp_sh["pred_hold"])
         return {
             "shift": shift,
             "hold": hold,
+            "long": long,
             "pred_shift": pred_shift,
             "hold": pred_hold,
         }
@@ -565,12 +577,13 @@ def _time_comparison():
 
     old = timeit.timeit("HS_OLD(vad)", globals=globals(), number=200)
     new = timeit.timeit("HS(vad)", globals=globals(), number=200)
-    print("Old: ", old)
-    print("New: ", new)
+    print(f"OLD {round(old, 3)}s vs {round(new,3)}s NEW")
     if old > new:
-        print(f"NEW approach is {old/new} times faster!")
+        print(f"NEW approach is {round(old/new,3)} times faster!")
+        print(f"NEW approach is {round(100*old/new - 100 ,1)}% faster!")
     else:
-        print(f"OLD approach is {new/old} times faster!")
+        print(f"OLD approach is {round(new/old,3)} times faster!")
+        print(f"OLD approach is {round(100*new/old - 100 ,1)}% faster!")
 
 
 if __name__ == "__main__":

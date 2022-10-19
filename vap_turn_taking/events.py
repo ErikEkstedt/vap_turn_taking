@@ -2,6 +2,7 @@ import torch
 import numpy.random as np_random
 
 from vap_turn_taking.backchannel import Backchannel, BackchannelNew
+import vap_turn_taking.functional as VF
 from vap_turn_taking.hold_shifts import HoldShift, HoldShiftNew
 from vap_turn_taking.utils import (
     time_to_frames,
@@ -226,14 +227,18 @@ class TurnTakingEvents:
         }
 
 
-class TurnTakingEventsNew:
+class TurnTakingEventsNewLoop:
     def __init__(
         self,
-        hs_pre_cond_time: float = 1.0,
-        hs_post_cond_time: float = 1.0,
+        sh_pre_cond_time: float = 1.0,
+        sh_post_cond_time: float = 1.0,
         bc_pre_cond_time: float = 1.0,
         bc_post_cond_time: float = 1.0,
         bc_max_duration: float = 1.0,
+        sh_prediction_region_on_active: bool = True,
+        prediction_region_time: float = 0.2,
+        long_onset_region_time: float = 0.2,
+        long_onset_condition_time: float = 1.0,
         min_context_time: float = 3,
         metric_time: float = 0.2,
         metric_pad_time: float = 0.05,
@@ -244,11 +249,133 @@ class TurnTakingEventsNew:
         self.min_silence_time = metric_time
         self.metric_time = metric_time
         self.metric_pad_time = metric_pad_time
+        self.min_silence_time = metric_pad_time + metric_time
+
+        assert (
+            min_context_time < max_time
+        ), "`minimum_context_time` must be lower than `max_time`"
+
+        # Time
+        self.sh_pre_cond_time = sh_pre_cond_time
+        self.sh_post_cond_time = sh_post_cond_time
+        self.prediction_region_time = prediction_region_time
+        self.bc_pre_cond_time = bc_pre_cond_time
+        self.bc_post_cond_time = bc_post_cond_time
+        self.bc_max_duration = bc_max_duration
+        self.sh_prediction_region_on_active = sh_prediction_region_on_active
+        self.long_onset_region_time = long_onset_region_time
+        self.long_onset_condition_time = long_onset_condition_time
+
+        # Frames
+        self.sh_pre_cond_frames = time_to_frames(sh_pre_cond_time, frame_hz)
+        self.sh_post_cond_frames = time_to_frames(sh_post_cond_time, frame_hz)
+        self.prediction_region_frames = time_to_frames(prediction_region_time, frame_hz)
+
+        self.bc_pre_cond_frames = time_to_frames(bc_pre_cond_time, frame_hz)
+        self.bc_post_cond_frames = time_to_frames(bc_post_cond_time, frame_hz)
+        self.bc_max_frames = time_to_frames(bc_max_duration, frame_hz)
+
+        self.long_onset_region_frames = time_to_frames(long_onset_region_time, frame_hz)
+        self.long_onset_condition_frames = time_to_frames(
+            long_onset_condition_time, frame_hz
+        )
+
+        self.min_silence_frames = time_to_frames(self.min_silence_time, frame_hz)
+        self.min_context_frames = time_to_frames(min_context_time, frame_hz)
+        self.max_frames = time_to_frames(max_time, frame_hz)
+
+    def _get_hold_shift(self, vad: torch.Tensor, ds: torch.Tensor):
+        return VF.hold_shift_regions(
+            vad=vad,
+            ds=ds,
+            pre_cond_frames=self.sh_pre_cond_frames,
+            post_cond_frames=self.sh_post_cond_frames,
+            prediction_region_frames=self.prediction_region_frames,
+            prediction_region_on_active=self.sh_prediction_region_on_active,
+            long_onset_region_frames=self.long_onset_region_frames,
+            long_onset_condition_frames=self.long_onset_condition_frames,
+            min_silence_frames=self.min_silence_frames,
+            min_context_frames=self.min_context_frames,
+            max_frame=self.max_frames,
+        )
+
+    def _get_backchannel(self, vad: torch.Tensor):
+        return VF.backchannel_regions(
+            vad,
+            pre_cond_frames=self.bc_pre_cond_frames,
+            post_cond_frames=self.bc_post_cond_frames,
+            min_context_frames=self.min_context_frames,
+            prediction_region_frames=self.prediction_region_frames,
+            max_bc_frames=self.bc_max_frames,
+            max_frame=self.max_frames,
+        )
+
+    @torch.no_grad()
+    def __call__(self, vad: torch.Tensor):
+        assert (
+            vad.ndim == 3
+        ), f"Expects vad of shape (B, N_FRAMES, 2) but got {vad.shape}"
+
+        shift, hold, long = [], [], []
+        pred_shift, pred_hold = [], []
+        backchannel, pred_backchannel = [], []
+        for tmp_vad in vad:
+            ds = VF.get_dialog_states(tmp_vad)
+            tmp_sh = self._get_hold_shift(tmp_vad, ds)
+            tmp_bc = self._get_backchannel(tmp_vad)
+            shift.append(tmp_sh["shift"])
+            hold.append(tmp_sh["hold"])
+            long.append(tmp_sh["long"])
+            pred_shift.append(tmp_sh["pred_shift"])
+            pred_hold.append(tmp_sh["pred_hold"])
+            backchannel.append(tmp_bc["backchannel"])
+            pred_backchannel.append(tmp_bc["pred_backchannel"])
+        return {
+            "shift": shift,
+            "hold": hold,
+            "long": long,
+            "pred_shift": pred_shift,
+            "backchannel": backchannel,
+            "pred_backchannel": pred_backchannel,
+        }
+
+
+class TurnTakingEventsNew:
+    def __init__(
+        self,
+        sh_pre_cond_time: float = 1.0,
+        sh_post_cond_time: float = 1.0,
+        bc_pre_cond_time: float = 1.0,
+        bc_post_cond_time: float = 1.0,
+        bc_max_duration: float = 1.0,
+        sh_prediction_region_on_active: bool = True,
+        prediction_region_time: float = 0.2,
+        long_onset_region_time: float = 0.2,
+        long_onset_condition_time: float = 1.0,
+        min_context_time: float = 3,
+        metric_time: float = 0.2,
+        metric_pad_time: float = 0.05,
+        max_time: int = 10,
+        frame_hz=50,
+    ):
+        self.frame_hz = frame_hz
+        self.min_silence_time = metric_time
+        self.metric_time = metric_time
+        self.metric_pad_time = metric_pad_time
+        self.min_silence_time = metric_pad_time + metric_time
+
+        assert (
+            min_context_time < max_time
+        ), "`minimum_context_time` must be lower than `max_time`"
 
         self.HS = HoldShiftNew(
-            pre_cond_time=hs_pre_cond_time,
-            post_cond_time=hs_post_cond_time,
-            min_silence_time=metric_time,
+            pre_cond_time=sh_pre_cond_time,
+            post_cond_time=sh_post_cond_time,
+            prediction_region_time=prediction_region_time,
+            prediction_region_on_active=sh_prediction_region_on_active,
+            long_onset_condition_time=long_onset_condition_time,
+            long_onset_region_time=long_onset_region_time,
+            min_silence_time=self.min_silence_time,
             min_context_time=min_context_time,
             max_time=max_time,
             frame_hz=frame_hz,
@@ -257,7 +384,9 @@ class TurnTakingEventsNew:
         self.BC = BackchannelNew(
             pre_cond_time=bc_pre_cond_time,
             post_cond_time=bc_post_cond_time,
+            prediction_region_time=prediction_region_time,
             max_bc_duration=bc_max_duration,
+            min_context_time=min_context_time,
             max_time=max_time,
             frame_hz=frame_hz,
         )
@@ -268,12 +397,17 @@ class TurnTakingEventsNew:
         s += self.HS.__repr__()
         return s
 
-    def __call__(self, vad):
+    @torch.no_grad()
+    def __call__(self, vad: torch.Tensor):
+        assert (
+            vad.ndim == 3
+        ), f"Expects vad of shape (B, N_FRAMES, 2) but got {vad.shape}"
         ret = {}
         bc = self.BC(vad)
         ret.update(bc)
         hs = self.HS(vad)
         ret.update(hs)
+        # Prediction negatives
         return ret
 
 
@@ -343,15 +477,24 @@ def _time_comparison():
         frame_hz=50,
     )
     eventer = TurnTakingEventsNew()
+    eventer_loop = TurnTakingEventsNewLoop()
+
+    events = eventer(vad)
+    print(events.keys())
 
     old = timeit.timeit("eventerOld(vad)", globals=globals(), number=200)
     new = timeit.timeit("eventer(vad)", globals=globals(), number=200)
-    print("Old: ", old)
-    print("New: ", new)
+    new_loop = timeit.timeit("eventer_loop(vad)", globals=globals(), number=200)
+    print("Old: ", round(old, 3))
+    print("New: ", round(new, 3))
+    print("LOOP: ", round(new_loop, 3))
+    print(f"OLD {round(old, 3)}s vs {round(new,3)}s NEW")
     if old > new:
-        print(f"NEW approach is {old/new} times faster!")
+        print(f"NEW approach is {round(old/new,3)} times faster!")
+        print(f"NEW approach is {round(100*old/new - 100 ,1)}% faster!")
     else:
-        print(f"OLD approach is {new/old} times faster!")
+        print(f"OLD approach is {round(new/old,3)} times faster!")
+        print(f"OLD approach is {round(100*new/old - 100 ,1)}% faster!")
 
 
 if __name__ == "__main__":

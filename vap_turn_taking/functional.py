@@ -141,16 +141,21 @@ def get_hs_regions(
     post_cond_frames: int,
     prediction_region_frames: int,
     prediction_region_on_active: bool,
+    long_onset_condition_frames: int,
+    long_onset_region_frames: int,
     min_silence_frames: int,
     min_context_frames: int,
     max_frame: int,
-) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
+) -> Tuple[
+    List[Tuple[int, int, int]], List[Tuple[int, int, int]], List[Tuple[int, int, int]]
+]:
     """
     get regions defined by `triad_label`
     """
 
     region = []
     prediction_region = []
+    long_onset_region = []
 
     # check if label is hold or shift
     # if the same speaker continues after silence -> hold
@@ -160,7 +165,7 @@ def get_hs_regions(
     )
     # No matches -> return
     if len(next_speakers) == 0:
-        return [], []
+        return [], [], []
 
     for last_onset, next_speaker in zip(steps, next_speakers):
         not_next_speaker = 0 if next_speaker == 1 else 1
@@ -228,6 +233,25 @@ def get_hs_regions(
         region.append((sil_start.item(), onset_start.item(), next_speaker))
 
         ################################################
+        # LONG ONSET CONDITION
+        ################################################
+        # if we have a valid shift we check if the onset
+        # of the next segment is longer than `long_onset_condition_frames`
+        # and if true we add the region
+        if not hold_cond and duration_of[next_onset] >= long_onset_condition_frames:
+            # We add the 'long-onset' region defined by `long_onset_region_frames`
+            # the condition is used to define "yea, this is an onset of a 'long' region"
+            # whereas the `long_onset_region_frames` define the area in which we wish
+            # to make predictions with the model.
+            long_onset_region.append(
+                (
+                    onset_start.item(),
+                    onset_start.item() + long_onset_region_frames,
+                    next_speaker,
+                )
+            )
+
+        ################################################
         # PREDICTION REGION CONDITION
         ################################################
         # The prediction region is defined at the end of the previous
@@ -257,7 +281,7 @@ def get_hs_regions(
 
         prediction_region.append((prediction_start, sil_start.item(), next_speaker))
 
-    return region, prediction_region
+    return region, prediction_region, long_onset_region
 
 
 def hold_shift_regions(
@@ -267,6 +291,8 @@ def hold_shift_regions(
     post_cond_frames: int,
     prediction_region_frames: int,
     prediction_region_on_active: bool,
+    long_onset_condition_frames: int,
+    long_onset_region_frames: int,
     min_silence_frames: int,
     min_context_frames: int,
     max_frame: int,
@@ -284,7 +310,8 @@ def hold_shift_regions(
 
     triads = states.unfold(0, size=3, step=1)
 
-    shifts, pred_shifts = get_hs_regions(
+    # SHIFTS
+    shifts, pred_shifts, long_onset = get_hs_regions(
         triads=triads,
         filled_vad=filled_vad,
         triad_label=TRIAD_SHIFT,
@@ -294,12 +321,15 @@ def hold_shift_regions(
         post_cond_frames=post_cond_frames,
         prediction_region_frames=prediction_region_frames,
         prediction_region_on_active=prediction_region_on_active,
+        long_onset_condition_frames=long_onset_condition_frames,
+        long_onset_region_frames=long_onset_region_frames,
         min_silence_frames=min_silence_frames,
         min_context_frames=min_context_frames,
         max_frame=max_frame,
     )
 
-    holds, pred_holds = get_hs_regions(
+    # HOLDS
+    holds, pred_holds, _ = get_hs_regions(
         triads=triads,
         filled_vad=filled_vad,
         triad_label=TRIAD_HOLD,
@@ -309,6 +339,8 @@ def hold_shift_regions(
         post_cond_frames=post_cond_frames,
         prediction_region_frames=prediction_region_frames,
         prediction_region_on_active=prediction_region_on_active,
+        long_onset_condition_frames=long_onset_condition_frames,
+        long_onset_region_frames=long_onset_region_frames,
         min_silence_frames=min_silence_frames,
         min_context_frames=min_context_frames,
         max_frame=max_frame,
@@ -316,6 +348,7 @@ def hold_shift_regions(
     return {
         "shift": shifts,
         "hold": holds,
+        "long": long_onset,
         "pred_shift": pred_shifts,
         "pred_hold": pred_holds,
     }

@@ -163,13 +163,13 @@ class Backchannel:
 class BackchannelNew:
     def __init__(
         self,
-        pre_cond_time: float = 1.0,
-        post_cond_time: float = 1.0,
-        prediction_region_time: float = 0.2,
-        min_context_time: float = 3.0,
-        max_bc_duration: float = 1.0,
-        max_time: float = 10.0,
-        frame_hz: int = 50,
+        pre_cond_time: float,
+        post_cond_time: float,
+        prediction_region_time: float,
+        min_context_time: float,
+        max_bc_duration: float,
+        max_time: float,
+        frame_hz: int,
     ):
         self.pre_cond_time = pre_cond_time
         self.post_cond_time = post_cond_time
@@ -271,14 +271,17 @@ def _time_comparison():
     bc_kwargs = event_conf_frames["bc"]
     BC_OLD = Backchannel(**bc_kwargs)
     BC = BackchannelNew()
+
     old = timeit.timeit("BC_OLD(vad)", globals=globals(), number=200)
     new = timeit.timeit("BC(vad)", globals=globals(), number=200)
-    print("Old: ", old)
-    print("New: ", new)
+
+    print(f"OLD {round(old, 3)}s vs {round(new,3)}s NEW")
     if old > new:
-        print(f"NEW approach is {old/new} times faster!")
+        print(f"NEW approach is {round(old/new,3)} times faster!")
+        print(f"NEW approach is {round(100*old/new - 100 ,1)}% faster!")
     else:
-        print(f"OLD approach is {new/old} times faster!")
+        print(f"OLD approach is {round(new/old,3)} times faster!")
+        print(f"OLD approach is {round(100*new/old - 100 ,1)}% faster!")
 
 
 if __name__ == "__main__":

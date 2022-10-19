@@ -31,7 +31,15 @@ def test_backchannel_new():
         )
     )
 
-    BC = BackchannelNew()
+    BC = BackchannelNew(
+        pre_cond_time=1.0,
+        post_cond_time=1.0,
+        prediction_region_time=0.2,
+        max_bc_duration=1.0,
+        min_context_time=3.0,
+        max_time=10.0,
+        frame_hz=50,
+    )
 
     bcs = BC(vad)
 
