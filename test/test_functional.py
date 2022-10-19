@@ -235,22 +235,24 @@ def test_backchannel():
         vad = vad_list_to_onehot(
             vad_list, hop_time=0.02, duration=11.99, channel_last=True
         )
-        backchannels = VF.backchannel_regions(
+        bc = VF.backchannel_regions(
             vad,
             pre_cond_frames=PRE_COND_FRAMES,
             post_cond_frames=POST_COND_FRAMES,
+            prediction_region_frames=PREDICTION_REGION_FRAMES,
             min_context_frames=MIN_CONTEXT_FRAMES,
             max_bc_frames=MAX_BC_FRAMES,
             max_frame=MAX_FRAME,
         )
         # ds = VF.get_dialog_states(vad)
-        # filled_vad = VF.fill_pauses(vad)
+        # filled_vad = VF.fill_pauses(vad, ds)
         # fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
         # _ = plot_vad_oh(vad, ax=ax)
         # _ = plot_vad_oh(filled_vad, ax=ax1)
-        # ax.axvline(min_context_frames, linewidth=4, color="k")
-        # ax.axvline(max_frame, linewidth=4, color="k")
-        # for bc_start, bc_end, speaker in backchannels:
+        # ax.axvline(MIN_CONTEXT_FRAMES, linewidth=4, color="k")
+        # ax.axvline(MAX_FRAME, linewidth=4, color="k")
+        # # for bc_start, bc_end, speaker in backchannels['backchannel']:
+        # for bc_start, bc_end, speaker in bc["pred_backchannel"]:
         #     ymin = 0
         #     ymax = 1
         #     if speaker == 1:
@@ -259,12 +261,62 @@ def test_backchannel():
         #     ax.vlines(bc_start, ymin=ymin, ymax=ymax, linewidth=4, color="g")
         #     ax.vlines(bc_end, ymin=ymin, ymax=ymax, linewidth=4, color="r")
         # plt.show()
-        assert len(backchannels) == N, "Wrong number of backchannels found"
+        assert len(bc["backchannel"]) == N, "Wrong number of backchannels found"
+        assert len(bc["pred_backchannel"]) == N, "Wrong number of backchannels found"
+
+    vad_list = vad_lists[0]
+    vad = vad_list_to_onehot(vad_list, hop_time=0.02, duration=11.99, channel_last=True)
+    bc = VF.backchannel_regions(
+        vad,
+        pre_cond_frames=PRE_COND_FRAMES,
+        post_cond_frames=POST_COND_FRAMES,
+        prediction_region_frames=100,
+        min_context_frames=MIN_CONTEXT_FRAMES,
+        max_bc_frames=MAX_BC_FRAMES,
+        max_frame=MAX_FRAME,
+    )
+    assert len(bc["backchannel"]) == 1, "Wrong number of backchannels found"
+    assert len(bc["pred_backchannel"]) == 0, "Wrong number of backchannels found"
+
+    vad_list = vad_lists[-1]
+    vad = vad_list_to_onehot(vad_list, hop_time=0.02, duration=11.99, channel_last=True)
+    bc = VF.backchannel_regions(
+        vad,
+        pre_cond_frames=PRE_COND_FRAMES,
+        post_cond_frames=POST_COND_FRAMES,
+        prediction_region_frames=100,
+        min_context_frames=MIN_CONTEXT_FRAMES,
+        max_bc_frames=MAX_BC_FRAMES,
+        max_frame=MAX_FRAME,
+    )
+    # fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
+    # _ = plot_vad_oh(vad, ax=ax)
+    # ax.axvline(MIN_CONTEXT_FRAMES, linewidth=4, color="k")
+    # ax.axvline(MAX_FRAME, linewidth=4, color="k")
+    # # for bc_start, bc_end, speaker in backchannels['backchannel']:
+    # for bc_start, bc_end, speaker in bc['backchannel']:
+    #     ymin = 0
+    #     ymax = 1
+    #     if speaker == 1:
+    #         ymin = -1
+    #         ymax = 0
+    #     ax.vlines(bc_start, ymin=ymin, ymax=ymax, linewidth=2, color="g")
+    #     ax.vlines(bc_end, ymin=ymin, ymax=ymax, linewidth=2, color="r")
+    # for bc_start, bc_end, speaker in bc['pred_backchannel']:
+    #     ymin = 0
+    #     ymax = 1
+    #     if speaker == 1:
+    #         ymin = -1
+    #         ymax = 0
+    #     ax.vlines(bc_start, ymin=ymin, ymax=ymax, linewidth=4, linestyle='dashed', color="g")
+    #     ax.vlines(bc_end, ymin=ymin, ymax=ymax, linewidth=4, linestyle='dashed', color="r")
+    # plt.show()
+    assert len(bc["backchannel"]) == 2, "Wrong number of backchannels found"
+    assert len(bc["pred_backchannel"]) == 1, "Wrong number of backchannels found"
 
 
 @pytest.mark.functional
 def test_prediction_regions(data):
-
     vad = data["shift"]["vad"][0]  # (600,2)
     ds = VF.get_dialog_states(vad)
 

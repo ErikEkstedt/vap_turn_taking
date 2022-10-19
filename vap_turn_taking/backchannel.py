@@ -165,6 +165,7 @@ class BackchannelNew:
         self,
         pre_cond_time: float = 1.0,
         post_cond_time: float = 1.0,
+        prediction_region_time: float = 0.2,
         min_context_time: float = 3.0,
         max_bc_duration: float = 1.0,
         max_time: float = 10.0,
@@ -178,6 +179,7 @@ class BackchannelNew:
 
         self.pre_cond_frame = time_to_frames(pre_cond_time, frame_hz)
         self.post_cond_frame = time_to_frames(post_cond_time, frame_hz)
+        self.prediction_region_frames = time_to_frames(prediction_region_time, frame_hz)
         self.min_context_frame = time_to_frames(min_context_time, frame_hz)
         self.max_bc_frame = time_to_frames(max_bc_duration, frame_hz)
         self.max_frame = time_to_frames(max_time, frame_hz)
@@ -186,34 +188,38 @@ class BackchannelNew:
         s = "Backhannel"
         s += "\n----------"
         s += f"\n  Time:"
-        s += f"\n\tpre_cond_time    = {self.pre_cond_time}s"
-        s += f"\n\tpost_cond_time   = {self.post_cond_time}s"
-        s += f"\n\tmax_bc_time      = {self.max_bc_time}s"
-        s += f"\n\tmin_context_time = {self.min_context_time}s"
-        s += f"\n\tmax_time         = {self.max_time}s"
+        s += f"\n\tpre_cond_time            = {self.pre_cond_time}s"
+        s += f"\n\tpost_cond_time           = {self.post_cond_time}s"
+        s += f"\n\tmax_bc_time              = {self.max_bc_time}s"
+        s += f"\n\tmin_context_time         = {self.min_context_time}s"
+        s += f"\n\tmax_time                 = {self.max_time}s"
         s += f"\n  Frame:"
-        s += f"\n\tpre_cond_frame    = {self.pre_cond_frame}"
-        s += f"\n\tpost_cond_frame   = {self.post_cond_frame}"
-        s += f"\n\tmax_bc_frame      = {self.max_bc_frame}"
-        s += f"\n\tmin_context_frame = {self.min_context_frame}"
-        s += f"\n\tmax_frame         = {self.max_frame}"
+        s += f"\n\tpre_cond_frame           = {self.pre_cond_frame}"
+        s += f"\n\tpost_cond_frame          = {self.post_cond_frame}"
+        s += f"\n\tprediction_region_frames = {self.prediction_region_frames}"
+        s += f"\n\tmax_bc_frame             = {self.max_bc_frame}"
+        s += f"\n\tmin_context_frame        = {self.min_context_frame}"
+        s += f"\n\tmax_frame                = {self.max_frame}"
         return s
 
     def __call__(self, vad: torch.Tensor):
         batch_size = vad.shape[0]
 
-        backchannels = []
+        backchannel = []
+        pred_backchannel = []
         for b in range(batch_size):
             sample_bc = VF.backchannel_regions(
                 vad[b],
                 pre_cond_frames=self.pre_cond_frame,
                 post_cond_frames=self.post_cond_frame,
                 min_context_frames=self.min_context_frame,
+                prediction_region_frames=self.prediction_region_frames,
                 max_bc_frames=self.max_bc_frame,
                 max_frame=self.max_frame,
             )
-            backchannels.append(sample_bc)
-        return {"backchannel": backchannels}
+            backchannel.append(sample_bc["backchannel"])
+            pred_backchannel.append(sample_bc["pred_backchannel"])
+        return {"backchannel": backchannel, "pred_backchannel": pred_backchannel}
 
 
 def _old_main():

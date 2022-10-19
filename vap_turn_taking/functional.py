@@ -325,16 +325,18 @@ def backchannel_regions(
     vad: torch.Tensor,
     pre_cond_frames: int,
     post_cond_frames: int,
+    prediction_region_frames: int,
     min_context_frames: int,
     max_bc_frames: int,
     max_frame: int,
-):
+) -> Dict[str, List[Tuple[int, int, int]]]:
     assert vad.ndim == 2, f"expects vad of shape (n_frames, 2) but got {vad.shape}."
 
     ds = get_dialog_states(vad)
     filled_vad = fill_pauses(vad, ds)
 
-    backchannels = []
+    backchannel = []
+    pred_backchannel = []
     for speaker in [0, 1]:
         start_of, duration_of, states = find_island_idx_len(filled_vad[..., speaker])
         if len(states) < 3:
@@ -378,9 +380,15 @@ def backchannel_regions(
                 # print('not enough silence POST to "bc"')
                 continue
             ################################################
-            # PRE OTHER CONDITION
+            # ALL CONDITIONS MET
             ################################################
             # Is the other speakr active before this segment?
-            backchannels.append((start_of[bc], start_of[post_silence], speaker))
+            backchannel.append((start_of[bc], start_of[post_silence], speaker))
 
-    return backchannels
+            pred_bc_start = start_of[bc] - prediction_region_frames
+            if pred_bc_start < min_context_frames:
+                continue
+
+            pred_backchannel.append((pred_bc_start, start_of[bc], speaker))
+
+    return {"backchannel": backchannel, "pred_backchannel": pred_backchannel}
