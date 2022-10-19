@@ -306,7 +306,7 @@ def hold_shift_regions(
     # If we have less than 3 unique dialog states
     # then we have no valid transitions
     if len(states) < 3:
-        return {"shift": [], "hold": [], "pred_shift": [], "pred_hold": []}
+        return {"shift": [], "hold": [], "long": [], "pred_shift": [], "pred_hold": []}
 
     triads = states.unfold(0, size=3, step=1)
 
