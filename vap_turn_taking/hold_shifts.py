@@ -1,5 +1,5 @@
 import torch
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from vap_turn_taking.utils import time_to_frames
 import vap_turn_taking.functional as VF
@@ -484,7 +484,7 @@ class HoldShiftNew:
 
     @torch.no_grad()
     def __call__(
-        self, vad: torch.Tensor
+        self, vad: torch.Tensor, ds: Optional[torch.Tensor] = None
     ) -> Dict[str, List[List[Tuple[int, int, int]]]]:
         assert (
             vad.ndim == 3
@@ -492,11 +492,15 @@ class HoldShiftNew:
 
         batch_size = vad.shape[0]
 
+        if ds is None:
+            ds = VF.get_dialog_states(vad)
+
         shift, hold, long = [], [], []
         pred_shift, pred_hold = [], []
         for b in range(batch_size):
             tmp_sh = VF.hold_shift_regions(
                 vad=vad[b],
+                ds=ds[b],
                 pre_cond_frames=self.pre_cond_frame,
                 post_cond_frames=self.post_cond_frame,
                 prediction_region_frames=self.prediction_region_frame,

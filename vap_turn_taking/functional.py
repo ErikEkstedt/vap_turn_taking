@@ -287,6 +287,7 @@ def get_hs_regions(
 
 def hold_shift_regions(
     vad: torch.Tensor,
+    ds: torch.Tensor,
     pre_cond_frames: int,
     post_cond_frames: int,
     prediction_region_frames: int,
@@ -299,7 +300,6 @@ def hold_shift_regions(
 ) -> Dict[str, List[Tuple[int, int, int]]]:
     assert vad.ndim == 2, f"expects vad of shape (n_frames, 2) but got {vad.shape}."
 
-    ds = get_dialog_states(vad)
     start_of, duration_of, states = find_island_idx_len(ds)
     filled_vad = fill_pauses(vad, ds, islands=(start_of, duration_of, states))
 
@@ -356,6 +356,7 @@ def hold_shift_regions(
 
 def backchannel_regions(
     vad: torch.Tensor,
+    ds: torch.Tensor,
     pre_cond_frames: int,
     post_cond_frames: int,
     prediction_region_frames: int,
@@ -365,7 +366,6 @@ def backchannel_regions(
 ) -> Dict[str, List[Tuple[int, int, int]]]:
     assert vad.ndim == 2, f"expects vad of shape (n_frames, 2) but got {vad.shape}."
 
-    ds = get_dialog_states(vad)
     filled_vad = fill_pauses(vad, ds)
 
     backchannel = []
@@ -427,5 +427,7 @@ def backchannel_regions(
     return {"backchannel": backchannel, "pred_backchannel": pred_backchannel}
 
 
-def negative_sample_regions(vad):
+def negative_sample_regions(
+    vad: torch.Tensor, padding_prior_activity_frames: int, on_active: bool = False
+):
     pass

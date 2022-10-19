@@ -108,8 +108,10 @@ def test_shift_hold(data):
     # Input
 
     vad = data["shift"]["vad"][0]  # (600,2)
+    ds = VF.get_dialog_states(vad)
     sh = VF.hold_shift_regions(
         vad=vad,
+        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -127,8 +129,10 @@ def test_shift_hold(data):
 
     # Input
     vad = data["only_hold"]["vad"][0]  # (600,2)
+    ds = VF.get_dialog_states(vad)
     sh = VF.hold_shift_regions(
         vad=vad,
+        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -146,8 +150,10 @@ def test_shift_hold(data):
 
     # Input
     vad = data["bc"]["vad"][0]  # (600,2)
+    ds = VF.get_dialog_states(vad)
     sh = VF.hold_shift_regions(
         vad=vad,
+        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -191,10 +197,13 @@ def test_shift_hold_batch(data):
     )
     batch_size = vad.shape[0]
 
+    ds = VF.get_dialog_states(vad)
+
     shifts, holds = [], []
     for b in range(batch_size):
         tmp_sh = VF.hold_shift_regions(
             vad=vad[b],
+            ds=ds[b],
             pre_cond_frames=PRE_COND_FRAMES,
             post_cond_frames=POST_COND_FRAMES,
             prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -229,8 +238,10 @@ def test_backchannel():
         vad = vad_list_to_onehot(
             vad_list, hop_time=0.02, duration=11.99, channel_last=True
         )
+        ds = VF.get_dialog_states(vad)
         bc = VF.backchannel_regions(
             vad,
+            ds=ds,
             pre_cond_frames=PRE_COND_FRAMES,
             post_cond_frames=POST_COND_FRAMES,
             prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -243,8 +254,10 @@ def test_backchannel():
 
     vad_list = vad_lists[0]
     vad = vad_list_to_onehot(vad_list, hop_time=0.02, duration=11.99, channel_last=True)
+    ds = VF.get_dialog_states(vad)
     bc = VF.backchannel_regions(
         vad,
+        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=100,
@@ -257,8 +270,10 @@ def test_backchannel():
 
     vad_list = vad_lists[-1]
     vad = vad_list_to_onehot(vad_list, hop_time=0.02, duration=11.99, channel_last=True)
+    ds = VF.get_dialog_states(vad)
     bc = VF.backchannel_regions(
         vad,
+        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=100,
@@ -296,8 +311,11 @@ def test_backchannel():
 def test_prediction_regions(data):
     vad = data["shift"]["vad"][0]  # (600,2)
 
+    ds = VF.get_dialog_states(vad)
+
     sh = VF.hold_shift_regions(
         vad=vad,
+        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -319,8 +337,10 @@ def test_prediction_regions(data):
         len(sh["pred_hold"]) == 1
     ), f"Number of pred-holds are incorrect {len(sh['pred_hold'])} != 1"
 
+    ds = VF.get_dialog_states(vad)
     sh = VF.hold_shift_regions(
         vad=vad,
+        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=100,
@@ -342,8 +362,10 @@ def test_prediction_regions(data):
         len(sh["pred_hold"]) == 1
     ), f"Number of pred-holds are incorrect {len(sh['pred_hold'])} != 1"
 
+    ds = VF.get_dialog_states(vad)
     sh = VF.hold_shift_regions(
         vad=vad,
+        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=100,
@@ -398,9 +420,11 @@ def test_long_short(data):
         vad = vad_list_to_onehot(
             vad_list, hop_time=0.02, duration=11.99, channel_last=True
         )
+        ds = VF.get_dialog_states(vad)
         # vad = data["shift"]["vad"][0]
         bc = VF.backchannel_regions(
             vad,
+            ds=ds,
             pre_cond_frames=PRE_COND_FRAMES,
             post_cond_frames=POST_COND_FRAMES,
             prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -410,6 +434,7 @@ def test_long_short(data):
         )
         sh = VF.hold_shift_regions(
             vad=vad,
+            ds=ds,
             pre_cond_frames=PRE_COND_FRAMES,
             post_cond_frames=POST_COND_FRAMES,
             prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -424,3 +449,39 @@ def test_long_short(data):
         assert (
             n_long_found == n_long
         ), f"Wrong number of 'long' regions recovered {n_long_found} != {n_long}"
+
+
+# @pytest.mark.functional
+# def test_negative_samples(data):
+#     vad = data['shift']['vad'][0]
+#     vad = torch.cat(
+#         (
+#             data["shift"]["vad"],
+#             data["only_hold"]["vad"],
+#             data["bc"]["vad"],
+#         )
+#     )
+#     ds = VF.get_dialog_states(vad)
+#     filled_vad = VF.fill_pauses(vad, ds)
+#     ds_fill = VF.get_dialog_states(filled_vad)
+#     speaker_a_segments = ds_fill == VF.STATE_ONLY_A
+#     import matplotlib.pyplot as plt
+#     from vap_turn_taking.plot_utils import plot_vad_oh
+#     fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
+#     _ = plot_vad_oh(vad, ax=ax)
+#     # _ = plot_vad_oh(filled_vad, ax=ax1)
+#     ax.axvline(MIN_CONTEXT_FRAMES, linewidth=4, color="k")
+#     ax.axvline(MAX_FRAME, linewidth=4, color="k")
+#     for start, end, speaker in sh["pred_shift"]:
+#         ax.axvline(start, linewidth=4, color="g")
+#         ax.axvline(end, linewidth=4, color="r")
+#     for start, end, speaker in sh["pred_hold"]:
+#         ax.axvline(start, linewidth=4, linestyle="dashed", color="g")
+#         ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
+#     for start, end, speaker in sh["shift"]:
+#         ax.axvline(start, linewidth=4, color="g")
+#         ax.axvline(end, linewidth=4, color="r")
+#     for start, end, speaker in sh["hold"]:
+#         ax.axvline(start, linewidth=4, linestyle="dashed", color="g")
+#         ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
+#     plt.show()

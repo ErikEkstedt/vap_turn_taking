@@ -3,6 +3,8 @@ import torch
 import vap_turn_taking.functional as VF
 from vap_turn_taking.utils import time_to_frames, get_last_speaker
 
+from typing import Optional
+
 
 def find_isolated_within(vad, prefix_frames, max_duration_frames, suffix_frames):
     """
@@ -202,14 +204,18 @@ class BackchannelNew:
         s += f"\n\tmax_frame                = {self.max_frame}"
         return s
 
-    def __call__(self, vad: torch.Tensor):
+    def __call__(self, vad: torch.Tensor, ds: Optional[torch.Tensor] = None):
         batch_size = vad.shape[0]
+
+        if ds is None:
+            ds = VF.get_dialog_states(vad)
 
         backchannel = []
         pred_backchannel = []
         for b in range(batch_size):
             sample_bc = VF.backchannel_regions(
                 vad[b],
+                ds=ds[b],
                 pre_cond_frames=self.pre_cond_frame,
                 post_cond_frames=self.post_cond_frame,
                 min_context_frames=self.min_context_frame,

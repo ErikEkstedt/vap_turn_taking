@@ -396,8 +396,10 @@ class TurnTakingEventsNew:
             vad.ndim == 3
         ), f"Expects vad of shape (B, N_FRAMES, 2) but got {vad.shape}"
         ret = {}
-        bc = self.BC(vad)
-        hs = self.HS(vad)
+
+        ds = VF.get_dialog_states(vad)
+        bc = self.BC(vad, ds=ds)
+        hs = self.HS(vad, ds=ds)
 
         ret.update(bc)
         ret.update(hs)
