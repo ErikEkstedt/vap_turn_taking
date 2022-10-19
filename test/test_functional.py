@@ -76,18 +76,14 @@ def test_fill_pauses(data):
 def test_shift_hold_simple(data):
     vad = data["shift"]["vad"]  # (1, 600, 2)
     vad = vad[0]  # (600, 2)
-    ds = VF.get_dialog_states(vad)
-
-    shifts, shift_overlap, holds = VF.hold_shift_regions_simple(ds)
+    shifts, shift_overlap, holds = VF.hold_shift_regions_simple(vad)
     assert len(shifts) == 2, f"Number of shifts are not correct {len(shifts)} != 2"
     assert len(holds) == 4, f"Number of holds are not correct {len(holds)} != 4"
     assert len(shift_overlap) == 0, f"Number of holds are not correct {len(holds)} != 0"
 
     vad = data["bc"]["vad"]  # (1, 600, 2)
     vad = vad[0]  # (600, 2)
-    ds = VF.get_dialog_states(vad)
-
-    shifts, shift_overlap, holds = VF.hold_shift_regions_simple(ds)
+    shifts, shift_overlap, holds = VF.hold_shift_regions_simple(vad)
     # import matplotlib.pyplot as plt
     # from vap_turn_taking.plot_utils import plot_vad_oh
     # fig, ax = plt.subplots(1, 1, figsize=(9, 6))
@@ -112,10 +108,8 @@ def test_shift_hold(data):
     # Input
 
     vad = data["shift"]["vad"][0]  # (600,2)
-    ds = VF.get_dialog_states(vad)
     sh = VF.hold_shift_regions(
         vad=vad,
-        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -133,10 +127,8 @@ def test_shift_hold(data):
 
     # Input
     vad = data["only_hold"]["vad"][0]  # (600,2)
-    ds = VF.get_dialog_states(vad)
     sh = VF.hold_shift_regions(
         vad=vad,
-        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -154,10 +146,8 @@ def test_shift_hold(data):
 
     # Input
     vad = data["bc"]["vad"][0]  # (600,2)
-    ds = VF.get_dialog_states(vad)
     sh = VF.hold_shift_regions(
         vad=vad,
-        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -203,10 +193,8 @@ def test_shift_hold_batch(data):
 
     shifts, holds = [], []
     for b in range(batch_size):
-        ds = VF.get_dialog_states(vad[b])
         tmp_sh = VF.hold_shift_regions(
             vad=vad[b],
-            ds=ds,
             pre_cond_frames=PRE_COND_FRAMES,
             post_cond_frames=POST_COND_FRAMES,
             prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -307,11 +295,9 @@ def test_backchannel():
 @pytest.mark.functional
 def test_prediction_regions(data):
     vad = data["shift"]["vad"][0]  # (600,2)
-    ds = VF.get_dialog_states(vad)
 
     sh = VF.hold_shift_regions(
         vad=vad,
-        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=PREDICTION_REGION_FRAMES,
@@ -335,7 +321,6 @@ def test_prediction_regions(data):
 
     sh = VF.hold_shift_regions(
         vad=vad,
-        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=100,
@@ -359,7 +344,6 @@ def test_prediction_regions(data):
 
     sh = VF.hold_shift_regions(
         vad=vad,
-        ds=ds,
         pre_cond_frames=PRE_COND_FRAMES,
         post_cond_frames=POST_COND_FRAMES,
         prediction_region_frames=100,
@@ -424,10 +408,8 @@ def test_long_short(data):
             max_bc_frames=MAX_BC_FRAMES,
             max_frame=MAX_FRAME,
         )
-        ds = VF.get_dialog_states(vad)
         sh = VF.hold_shift_regions(
             vad=vad,
-            ds=ds,
             pre_cond_frames=PRE_COND_FRAMES,
             post_cond_frames=POST_COND_FRAMES,
             prediction_region_frames=PREDICTION_REGION_FRAMES,

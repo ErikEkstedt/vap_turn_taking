@@ -495,10 +495,8 @@ class HoldShiftNew:
         shift, hold, long = [], [], []
         pred_shift, pred_hold = [], []
         for b in range(batch_size):
-            ds = VF.get_dialog_states(vad[b])
             tmp_sh = VF.hold_shift_regions(
                 vad=vad[b],
-                ds=ds,
                 pre_cond_frames=self.pre_cond_frame,
                 post_cond_frames=self.post_cond_frame,
                 prediction_region_frames=self.prediction_region_frame,

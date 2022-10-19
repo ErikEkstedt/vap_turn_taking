@@ -87,7 +87,7 @@ def fill_pauses(
 
 
 def hold_shift_regions_simple(
-    ds: torch.Tensor,
+    vad: torch.Tensor,
 ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]], List[Tuple[int, int]]]:
     """
     Extract Holds/Shifts dirctly from ds=dialog_states without any type of condtions.
@@ -96,7 +96,8 @@ def hold_shift_regions_simple(
     holds/shifts that are solely defined on what frame the active frame before and after the silence
     belongs to.
     """
-    assert ds.ndim == 1, f"expects ds of shape (n_frames, ) but got {ds.shape}."
+    assert vad.ndim == 2, f"expects vad of shape (n_frames, 2) but got {vad.shape}."
+    ds = get_dialog_states(vad)
 
     def _get_regions(
         triads: torch.Tensor, indices: torch.Tensor, triad_label: torch.Tensor
@@ -286,7 +287,6 @@ def get_hs_regions(
 
 def hold_shift_regions(
     vad: torch.Tensor,
-    ds: torch.Tensor,
     pre_cond_frames: int,
     post_cond_frames: int,
     prediction_region_frames: int,
@@ -298,8 +298,8 @@ def hold_shift_regions(
     max_frame: int,
 ) -> Dict[str, List[Tuple[int, int, int]]]:
     assert vad.ndim == 2, f"expects vad of shape (n_frames, 2) but got {vad.shape}."
-    assert ds.ndim == 1, f"expects ds of shape (n_frames, ) but got {ds.shape}."
 
+    ds = get_dialog_states(vad)
     start_of, duration_of, states = find_island_idx_len(ds)
     filled_vad = fill_pauses(vad, ds, islands=(start_of, duration_of, states))
 
@@ -425,3 +425,7 @@ def backchannel_regions(
             pred_backchannel.append((pred_bc_start, start_of[bc], speaker))
 
     return {"backchannel": backchannel, "pred_backchannel": pred_backchannel}
+
+
+def negative_sample_regions(vad):
+    pass

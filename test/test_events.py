@@ -43,18 +43,16 @@ def test_events_new():
         )
     )
     vad = torch.cat([vad] * 10)
-    eventer = TurnTakingEventsNew()
-    events = eventer(vad)
 
+    eventer = TurnTakingEventsNew(equal_hold_shift=False)
+    events = eventer(vad)
     holds = events["hold"]
     shifts = events["shift"]
-    backchannels = events["backchannel"]
-
+    backchannels = events["short"]
     # N events per repeated "triad"
     LABEL_SHIFT = [1, 0, 1]
     LABEL_HOLD = [1, 2, 1]
     LABEL_BC = [0, 0, 1]
-
     last_i = 0
     for i in range(3, 30, 3):
         h = holds[last_i:i]
