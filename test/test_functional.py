@@ -4,6 +4,17 @@ import torch
 import vap_turn_taking.functional as VF
 from vap_turn_taking.utils import vad_list_to_onehot
 
+# @ 50hz
+FRAME_HZ: int = 50
+PRE_COND_FRAMES: int = 50
+POST_COND_FRAMES: int = 50
+PREDICTION_REGION_FRAMES: int = 25  # 0.5s
+PREDICTION_REGION_ON_ACTIVE: bool = True
+MIN_CONTEXT_FRAMES: int = 150
+MIN_SILENCE_FRAMES: int = 10  # 0.2s
+MAX_BC_FRAMES: int = 50
+MAX_FRAME: int = 500
+
 
 @pytest.fixture
 def data():
@@ -24,7 +35,6 @@ def test_dialog_state(data):
 
 @pytest.mark.functional
 def test_find_island_idx_len(data):
-
     vad = data["shift"]["vad"]  # (1, 600, 2)
     B, N_FRAMES, _ = vad.shape
 
@@ -97,54 +107,57 @@ def test_shift_hold(data):
     """
     Test shift/hold extraction on a single sample
     """
-    # @ 50hz
-    pre_cond_frames = 50  # 1 second
-    post_cond_frames = 50  # 1 second
-    min_silence_frames = 10  # 0.2 second
-    min_context_frames = 150  # 3 seconds
-    max_frame = 500  # 10 seconds
-
     # Input
     vad = data["shift"]["vad"][0]  # (600,2)
     ds = VF.get_dialog_states(vad)
-    shifts, holds = VF.hold_shift_regions(
+    sh = VF.hold_shift_regions(
         vad=vad,
         ds=ds,
-        pre_cond_frames=pre_cond_frames,
-        post_cond_frames=post_cond_frames,
-        min_silence_frames=min_silence_frames,
-        min_context_frames=min_context_frames,
-        max_frame=max_frame,
+        pre_cond_frames=PRE_COND_FRAMES,
+        post_cond_frames=POST_COND_FRAMES,
+        prediction_region_frames=PREDICTION_REGION_FRAMES,
+        prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+        min_silence_frames=MIN_SILENCE_FRAMES,
+        min_context_frames=MIN_CONTEXT_FRAMES,
+        max_frame=MAX_FRAME,
     )
-    assert len(shifts) == 1, f"Number of shifts are incorrect {len(shifts)} != 1"
-    assert len(holds) == 1, f"Number of holds are incorrect {len(holds)} != 1"
+    assert (
+        len(sh["shift"]) == 1
+    ), f"Number of shifts are incorrect {len(sh['shift'])} != 1"
+    assert len(sh["hold"]) == 1, f"Number of holds are incorrect {len(sh['hold'])} != 1"
 
     # Input
     vad = data["only_hold"]["vad"][0]  # (600,2)
     ds = VF.get_dialog_states(vad)
-    shifts, holds = VF.hold_shift_regions(
+    sh = VF.hold_shift_regions(
         vad=vad,
         ds=ds,
-        pre_cond_frames=pre_cond_frames,
-        post_cond_frames=post_cond_frames,
-        min_silence_frames=min_silence_frames,
-        min_context_frames=min_context_frames,
-        max_frame=max_frame,
+        pre_cond_frames=PRE_COND_FRAMES,
+        post_cond_frames=POST_COND_FRAMES,
+        prediction_region_frames=PREDICTION_REGION_FRAMES,
+        prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+        min_silence_frames=MIN_SILENCE_FRAMES,
+        min_context_frames=MIN_CONTEXT_FRAMES,
+        max_frame=MAX_FRAME,
     )
-    assert len(shifts) == 0, f"Number of shifts are incorrect {len(shifts)} != 0"
-    assert len(holds) == 2, f"Number of holds are incorrect {len(holds)} != 2"
+    assert (
+        len(sh["shift"]) == 0
+    ), f"Number of shifts are incorrect {len(sh['shift'])} != 0"
+    assert len(sh["hold"]) == 2, f"Number of holds are incorrect {len(sh['hold'])} != 2"
 
     # Input
     vad = data["bc"]["vad"][0]  # (600,2)
     ds = VF.get_dialog_states(vad)
-    shifts, holds = VF.hold_shift_regions(
+    sh = VF.hold_shift_regions(
         vad=vad,
         ds=ds,
-        pre_cond_frames=pre_cond_frames,
-        post_cond_frames=post_cond_frames,
-        min_silence_frames=min_silence_frames,
-        min_context_frames=min_context_frames,
-        max_frame=max_frame,
+        pre_cond_frames=PRE_COND_FRAMES,
+        post_cond_frames=POST_COND_FRAMES,
+        prediction_region_frames=PREDICTION_REGION_FRAMES,
+        prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+        min_silence_frames=MIN_SILENCE_FRAMES,
+        min_context_frames=MIN_CONTEXT_FRAMES,
+        max_frame=MAX_FRAME,
     )
     # import matplotlib.pyplot as plt
     # from vap_turn_taking.plot_utils import plot_vad_oh
@@ -159,8 +172,10 @@ def test_shift_hold(data):
     #     ax.axvline(start, linewidth=2, linestyle="dashed", color="g")
     #     ax.axvline(end, linewidth=2, linestyle="dashed", color="r")
     # plt.pause(0.1)
-    assert len(shifts) == 1, f"Number of shifts are incorrect {len(shifts)} != 1"
-    assert len(holds) == 1, f"Number of holds are incorrect {len(holds)} != 1"
+    assert (
+        len(sh["shift"]) == 1
+    ), f"Number of shifts are incorrect {len(sh['shift'])} != 1"
+    assert len(sh["hold"]) == 1, f"Number of holds are incorrect {len(sh['hold'])} != 1"
 
 
 @pytest.mark.functional
@@ -168,14 +183,6 @@ def test_shift_hold_batch(data):
     """
     Test shift/hold extraction on batched sample
     """
-
-    # @ 50hz
-    pre_cond_frames = 50  # 1 second
-    post_cond_frames = 50  # 1 second
-    min_silence_frames = 10  # 0.2 second
-    min_context_frames = 150  # 3 seconds
-    max_frame = 500  # 10 seconds
-
     vad = torch.cat(
         (
             data["shift"]["vad"],
@@ -188,17 +195,19 @@ def test_shift_hold_batch(data):
     shifts, holds = [], []
     for b in range(batch_size):
         ds = VF.get_dialog_states(vad[b])
-        tmp_shifts, tmp_holds = VF.hold_shift_regions(
+        tmp_sh = VF.hold_shift_regions(
             vad=vad[b],
             ds=ds,
-            pre_cond_frames=pre_cond_frames,
-            post_cond_frames=post_cond_frames,
-            min_silence_frames=min_silence_frames,
-            min_context_frames=min_context_frames,
-            max_frame=max_frame,
+            pre_cond_frames=PRE_COND_FRAMES,
+            post_cond_frames=POST_COND_FRAMES,
+            prediction_region_frames=PREDICTION_REGION_FRAMES,
+            prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+            min_silence_frames=MIN_SILENCE_FRAMES,
+            min_context_frames=MIN_CONTEXT_FRAMES,
+            max_frame=MAX_FRAME,
         )
-        shifts.append(tmp_shifts)
-        holds.append(tmp_holds)
+        shifts.append(tmp_sh["shift"])
+        holds.append(tmp_sh["shift"])
     assert (
         len(shifts) == batch_size
     ), f"not all SHIFT samples are included batch_size is off"
@@ -208,16 +217,11 @@ def test_shift_hold_batch(data):
 
 
 @pytest.mark.functional
-def test_backchannel(data):
-    pre_cond_frames = 50
-    post_cond_frames = 50
-    min_context_frames = 150
-    max_bc_frames = 50
-    max_frame = 500
+def test_backchannel():
     # vad = data["bc"]["vad"][0]  # (n_frames, 2)
 
-    import matplotlib.pyplot as plt
-    from vap_turn_taking.plot_utils import plot_vad_oh
+    # import matplotlib.pyplot as plt
+    # from vap_turn_taking.plot_utils import plot_vad_oh
 
     vad_lists = [
         [[[2, 4], [7, 9]], [[4.6, 5.5]]],
@@ -233,11 +237,11 @@ def test_backchannel(data):
         )
         backchannels = VF.backchannel_regions(
             vad,
-            pre_cond_frames=pre_cond_frames,
-            post_cond_frames=post_cond_frames,
-            min_context_frames=min_context_frames,
-            max_bc_frames=max_bc_frames,
-            max_frame=max_frame,
+            pre_cond_frames=PRE_COND_FRAMES,
+            post_cond_frames=POST_COND_FRAMES,
+            min_context_frames=MIN_CONTEXT_FRAMES,
+            max_bc_frames=MAX_BC_FRAMES,
+            max_frame=MAX_FRAME,
         )
         # ds = VF.get_dialog_states(vad)
         # filled_vad = VF.fill_pauses(vad)
@@ -256,3 +260,96 @@ def test_backchannel(data):
         #     ax.vlines(bc_end, ymin=ymin, ymax=ymax, linewidth=4, color="r")
         # plt.show()
         assert len(backchannels) == N, "Wrong number of backchannels found"
+
+
+@pytest.mark.functional
+def test_prediction_regions(data):
+
+    vad = data["shift"]["vad"][0]  # (600,2)
+    ds = VF.get_dialog_states(vad)
+
+    sh = VF.hold_shift_regions(
+        vad=vad,
+        ds=ds,
+        pre_cond_frames=PRE_COND_FRAMES,
+        post_cond_frames=POST_COND_FRAMES,
+        prediction_region_frames=PREDICTION_REGION_FRAMES,
+        prediction_region_on_active=PREDICTION_REGION_ON_ACTIVE,
+        min_silence_frames=MIN_SILENCE_FRAMES,
+        min_context_frames=MIN_CONTEXT_FRAMES,
+        max_frame=MAX_FRAME,
+    )
+    assert (
+        len(sh["shift"]) == 1
+    ), f"Number of shifts are incorrect {len(sh['shift'])} != 1"
+    assert len(sh["hold"]) == 1, f"Number of holds are incorrect {len(sh['hold'])} != 1"
+    assert (
+        len(sh["pred_shift"]) == 1
+    ), f"Number of pred-shifts are incorrect {len(sh['pred_shift'])} != 1"
+    assert (
+        len(sh["pred_hold"]) == 1
+    ), f"Number of pred-holds are incorrect {len(sh['pred_hold'])} != 1"
+
+    sh = VF.hold_shift_regions(
+        vad=vad,
+        ds=ds,
+        pre_cond_frames=PRE_COND_FRAMES,
+        post_cond_frames=POST_COND_FRAMES,
+        prediction_region_frames=100,
+        prediction_region_on_active=False,
+        min_silence_frames=MIN_SILENCE_FRAMES,
+        min_context_frames=MIN_CONTEXT_FRAMES,
+        max_frame=MAX_FRAME,
+    )
+    assert (
+        len(sh["shift"]) == 1
+    ), f"Number of shifts are incorrect {len(sh['shift'])} != 1"
+    assert len(sh["hold"]) == 1, f"Number of holds are incorrect {len(sh['hold'])} != 1"
+    assert (
+        len(sh["pred_shift"]) == 0
+    ), f"Number of pred-shifts are incorrect {len(sh['pred_shift'])} != 0"
+    assert (
+        len(sh["pred_hold"]) == 1
+    ), f"Number of pred-holds are incorrect {len(sh['pred_hold'])} != 1"
+
+    sh = VF.hold_shift_regions(
+        vad=vad,
+        ds=ds,
+        pre_cond_frames=PRE_COND_FRAMES,
+        post_cond_frames=POST_COND_FRAMES,
+        prediction_region_frames=100,
+        prediction_region_on_active=True,
+        min_silence_frames=MIN_SILENCE_FRAMES,
+        min_context_frames=MIN_CONTEXT_FRAMES,
+        max_frame=MAX_FRAME,
+    )
+    # import matplotlib.pyplot as plt
+    # from vap_turn_taking.plot_utils import plot_vad_oh
+    # fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
+    # _ = plot_vad_oh(vad, ax=ax)
+    # # _ = plot_vad_oh(filled_vad, ax=ax1)
+    # ax.axvline(MIN_CONTEXT_FRAMES, linewidth=4, color="k")
+    # ax.axvline(MAX_FRAME, linewidth=4, color="k")
+    # for start, end, speaker in sh["pred_shift"]:
+    #     ax.axvline(start, linewidth=4, color="g")
+    #     ax.axvline(end, linewidth=4, color="r")
+    # for start, end, speaker in sh["pred_hold"]:
+    #     ax.axvline(start, linewidth=4, linestyle="dashed", color="g")
+    #     ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
+    # for start, end, speaker in sh["shift"]:
+    #     ax.axvline(start, linewidth=4, color="g")
+    #     ax.axvline(end, linewidth=4, color="r")
+    # for start, end, speaker in sh["hold"]:
+    #     ax.axvline(start, linewidth=4, linestyle="dashed", color="g")
+    #     ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
+    # plt.show()
+    assert (
+        len(sh["shift"]) == 1
+    ), f"Number of shifts are incorrect {len(sh['shift'])} != 1"
+    assert len(sh["hold"]) == 1, f"Number of holds are incorrect {len(sh['hold'])} != 1"
+    assert (
+        len(sh["pred_shift"]) == 0
+    ), f"Number of pred-shifts are incorrect {len(sh['pred_shift'])} != 0"
+    assert (
+        len(sh["pred_hold"]) == 0
+    ), f"Number of pred-holds are incorrect {len(sh['pred_hold'])} != 0"

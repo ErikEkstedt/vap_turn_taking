@@ -1,5 +1,5 @@
 import torch
-from typing import Tuple, List, Optional
+from typing import Dict, Tuple, List, Optional
 
 
 # Templates
@@ -131,7 +131,7 @@ def hold_shift_regions_simple(
     return shifts, shift_overlap, holds
 
 
-def get_region(
+def get_hs_regions(
     triads: torch.Tensor,
     filled_vad: torch.Tensor,
     triad_label: torch.Tensor,
@@ -139,26 +139,30 @@ def get_region(
     duration_of: torch.Tensor,
     pre_cond_frames: int,
     post_cond_frames: int,
+    prediction_region_frames: int,
+    prediction_region_on_active: bool,
     min_silence_frames: int,
     min_context_frames: int,
     max_frame: int,
-) -> List[Tuple[int, int, int]]:
+) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
     """
     get regions defined by `triad_label`
     """
+
+    region = []
+    prediction_region = []
+
     # check if label is hold or shift
     # if the same speaker continues after silence -> hold
     hold_cond = triad_label[0, 0] == triad_label[0, -1]
-    region = []
     next_speakers, steps = torch.where(
         (triads == triad_label.unsqueeze(1)).sum(-1) == 3
     )
-
     # No matches -> return
     if len(next_speakers) == 0:
-        return []
+        return [], []
 
-    for step, next_speaker in zip(steps, next_speakers):
+    for last_onset, next_speaker in zip(steps, next_speakers):
         not_next_speaker = 0 if next_speaker == 1 else 1
         prev_speaker = next_speaker if hold_cond else not_next_speaker
         not_prev_speaker = 0 if prev_speaker == 1 else 1
@@ -166,8 +170,8 @@ def get_region(
         # If we find a triad match at step 's' then the actual SILENCE segment
         # STARTS:           on the next step -> add 1
         # ENDS/next-onset:  on the two next step -> add 2
-        silence = step + 1
-        next_onset = step + 2
+        silence = last_onset + 1
+        next_onset = last_onset + 2
         ################################################
         # MINIMAL CONTEXT CONDITION
         ################################################
@@ -222,7 +226,38 @@ def get_region(
         # ALL CONDITIONS MET
         ################################################
         region.append((sil_start.item(), onset_start.item(), next_speaker))
-    return region
+
+        ################################################
+        # PREDICTION REGION CONDITION
+        ################################################
+        # The prediction region is defined at the end of the previous
+        # activity, not inside the silences.
+
+        # IF PREDICTION_REGION_ON_ACTIVE = FALSE
+        # We don't care about the previous activity but only take
+        # `prediction_region_frames` prior to the relevant hold/shift silence.
+        # e.g. if prediction_region_frames=100 and the last segment prior to the
+        # relevant hold/shift silence was 70 frames the prediction region would include
+        # < 30 frames of silence (a pause or a shift (could be a quick back and forth limited by the condition variables...))
+        if prediction_region_on_active:
+            # We make sure that the last VAD segments
+            # of the last speaker is longer than
+            # `prediction_region_frames`
+            if duration_of[last_onset] < prediction_region_frames:
+                continue
+
+        # that if the last activity
+        prediction_start = sil_start.item() - prediction_region_frames
+
+        ################################################
+        # MINIMAL CONTEXT CONDITION (PREDICTION)
+        ################################################
+        if prediction_start < min_context_frames:
+            continue
+
+        prediction_region.append((prediction_start, sil_start.item(), next_speaker))
+
+    return region, prediction_region
 
 
 def hold_shift_regions(
@@ -230,10 +265,12 @@ def hold_shift_regions(
     ds: torch.Tensor,
     pre_cond_frames: int,
     post_cond_frames: int,
+    prediction_region_frames: int,
+    prediction_region_on_active: bool,
     min_silence_frames: int,
     min_context_frames: int,
     max_frame: int,
-) -> Tuple[List[Tuple[int, int, int]], List[Tuple[int, int, int]]]:
+) -> Dict[str, List[Tuple[int, int, int]]]:
     assert vad.ndim == 2, f"expects vad of shape (n_frames, 2) but got {vad.shape}."
     assert ds.ndim == 1, f"expects ds of shape (n_frames, ) but got {ds.shape}."
 
@@ -243,11 +280,11 @@ def hold_shift_regions(
     # If we have less than 3 unique dialog states
     # then we have no valid transitions
     if len(states) < 3:
-        return [], []
+        return {"shift": [], "hold": [], "pred_shift": [], "pred_hold": []}
 
     triads = states.unfold(0, size=3, step=1)
 
-    shifts = get_region(
+    shifts, pred_shifts = get_hs_regions(
         triads=triads,
         filled_vad=filled_vad,
         triad_label=TRIAD_SHIFT,
@@ -255,12 +292,14 @@ def hold_shift_regions(
         duration_of=duration_of,
         pre_cond_frames=pre_cond_frames,
         post_cond_frames=post_cond_frames,
+        prediction_region_frames=prediction_region_frames,
+        prediction_region_on_active=prediction_region_on_active,
         min_silence_frames=min_silence_frames,
         min_context_frames=min_context_frames,
         max_frame=max_frame,
     )
 
-    holds = get_region(
+    holds, pred_holds = get_hs_regions(
         triads=triads,
         filled_vad=filled_vad,
         triad_label=TRIAD_HOLD,
@@ -268,11 +307,18 @@ def hold_shift_regions(
         duration_of=duration_of,
         pre_cond_frames=pre_cond_frames,
         post_cond_frames=post_cond_frames,
+        prediction_region_frames=prediction_region_frames,
+        prediction_region_on_active=prediction_region_on_active,
         min_silence_frames=min_silence_frames,
         min_context_frames=min_context_frames,
         max_frame=max_frame,
     )
-    return shifts, holds
+    return {
+        "shift": shifts,
+        "hold": holds,
+        "pred_shift": pred_shifts,
+        "pred_hold": pred_holds,
+    }
 
 
 def backchannel_regions(

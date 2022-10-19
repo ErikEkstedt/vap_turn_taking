@@ -434,6 +434,8 @@ class HoldShiftNew:
         self,
         pre_cond_time: float = 1,
         post_cond_time: float = 1,
+        prediction_region_time: float = 0.2,
+        prediction_region_on_active: bool = True,
         min_silence_time: float = 0.2,
         min_context_time: float = 3,
         max_time: int = 10,
@@ -450,6 +452,8 @@ class HoldShiftNew:
         # Frames
         self.pre_cond_frame = time_to_frames(pre_cond_time, frame_hz)
         self.post_cond_frame = time_to_frames(post_cond_time, frame_hz)
+        self.prediction_region_frame = time_to_frames(prediction_region_time, frame_hz)
+        self.prediction_region_on_active = prediction_region_on_active
         self.min_silence_frame = time_to_frames(min_silence_time, frame_hz)
         self.min_context_frame = time_to_frames(min_context_time, frame_hz)
         self.max_frame = time_to_frames(max_time, frame_hz)
@@ -471,28 +475,40 @@ class HoldShiftNew:
         s += f"\n\tmax_frame         = {self.max_frame}"
         return s
 
-    def __call__(self, vad: torch.Tensor) -> Dict[str, List[List[Tuple[int, int]]]]:
+    def __call__(
+        self, vad: torch.Tensor
+    ) -> Dict[str, List[List[Tuple[int, int, int]]]]:
         assert (
             vad.ndim == 3
         ), f"Expected vad.ndim=3 (B, N_FRAMES, 2) but got {vad.shape}"
 
         batch_size = vad.shape[0]
 
-        shifts, holds = [], []
+        shift, hold = [], []
+        pred_shift, pred_hold = [], []
         for b in range(batch_size):
             ds = VF.get_dialog_states(vad[b])
-            tmp_shifts, tmp_holds = VF.hold_shift_regions(
+            tmp_sh = VF.hold_shift_regions(
                 vad=vad[b],
                 ds=ds,
                 pre_cond_frames=self.pre_cond_frame,
                 post_cond_frames=self.post_cond_frame,
+                prediction_region_frames=self.prediction_region_frame,
+                prediction_region_on_active=self.prediction_region_on_active,
                 min_silence_frames=self.min_silence_frame,
                 min_context_frames=self.min_context_frame,
                 max_frame=self.max_frame,
             )
-            shifts.append(tmp_shifts)
-            holds.append(tmp_holds)
-        return {"shift": shifts, "hold": holds}
+            shift.append(tmp_sh["shift"])
+            hold.append(tmp_sh["hold"])
+            pred_shift.append(tmp_sh["pred_shift"])
+            pred_hold.append(tmp_sh["pred_hold"])
+        return {
+            "shift": shift,
+            "hold": hold,
+            "pred_shift": pred_shift,
+            "hold": pred_hold,
+        }
 
 
 def _old_main():
@@ -546,6 +562,7 @@ def _time_comparison():
     hs_kwargs = event_conf_frames["hs"]
     HS_OLD = HoldShift(**hs_kwargs)
     HS = HoldShiftNew()
+
     old = timeit.timeit("HS_OLD(vad)", globals=globals(), number=200)
     new = timeit.timeit("HS(vad)", globals=globals(), number=200)
     print("Old: ", old)
