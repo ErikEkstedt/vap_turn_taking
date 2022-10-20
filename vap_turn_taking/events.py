@@ -499,15 +499,12 @@ if __name__ == "__main__":
     dm.prepare_data()
     dm.setup()
 
-    eventer = TurnTakingEventsNew()
-    print(eventer)
-    vad = torch.load("example/vap_data.pt")["bc"]["vad"]
-    events = eventer(vad)
-    events
+    eventer = TurnTakingEventsNew(max_time=dm.audio_duration)
 
     # batch = next(iter(dm.val_dataloader()))
     # ret = eventer(batch["vad"])
 
+    n_max_batches = 200
     n_events = {
         "shift": 0,
         "hold": 0,
@@ -518,7 +515,7 @@ if __name__ == "__main__":
         "long": 0,
         "short": 0,
     }
-    for batch in tqdm(dm.val_dataloader()):
+    for ii, batch in enumerate(tqdm(dm.val_dataloader())):
         batch_size = batch["vad"].shape[0]
         events = eventer(batch["vad"])
         for b in range(batch_size):
@@ -531,6 +528,8 @@ if __name__ == "__main__":
             n_events["pred_backchannel"] += len(events["pred_backchannel"][b])
             n_events["pred_backchannel_neg"] += len(events["pred_backchannel_neg"][b])
             # n_events["pred_bc_neg"] += len(events["pred_backchannel_neg"][b])
+        if n_max_batches > 0 and ii == n_max_batches:
+            break
     for k, v in n_events.items():
         print(f"{k}: {v}")
     # print("Add extra pred shift neg: ", eventer.add_extra_pred_shift_neg)
@@ -538,16 +537,44 @@ if __name__ == "__main__":
     for k, v in eventer.add_extra.items():
         print(f"Add extra '{k}': {v}")
 
-    # for b in range(vad.shape[0]):
-    #     fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
-    #     _ = plot_vad_oh(vad[b], ax=ax)
-    #     # _ = plot_vad_oh(filled_vad, ax=ax1)
-    #     ax.axvline(eventer.min_context_frames, linewidth=4, color="k")
-    #     ax.axvline(eventer.max_frames, linewidth=4, color="k")
-    #     for start, end, speaker in events["pred_shift"][b]:
-    #         ax.axvline(start, linewidth=4, color="g")
-    #         ax.axvline(end, linewidth=4, color="g")
-    #     for start, end, speaker in events["pred_hold"][b]:
-    #         ax.axvline(start, linewidth=4, linestyle="dashed", color="r")
-    #         ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
-    #     plt.show()
+    # Plot all events
+    for b in range(len(events["shift"])):
+        fig, ax = plt.subplots(4, 1, figsize=(9, 6))
+        _ = plot_vad_oh(batch["vad"][b], ax=ax[0])
+        _ = plot_vad_oh(batch["vad"][b], ax=ax[1])
+        _ = plot_vad_oh(batch["vad"][b], ax=ax[2])
+        _ = plot_vad_oh(batch["vad"][b], ax=ax[3])
+        # Shift / Hold
+        for start, end, speaker in events["shift"][b]:
+            ax[0].axvline(start, linewidth=4, color="g")
+            ax[0].axvline(end, linewidth=4, color="g")
+        for start, end, speaker in events["hold"][b]:
+            ax[0].axvline(start, linewidth=4, color="r")
+            ax[0].axvline(end, linewidth=4, color="r")
+        # Pred Shift
+        for start, end, speaker in events["pred_shift"][b]:
+            ax[1].axvline(start, linewidth=4, color="g")
+            ax[1].axvline(end, linewidth=4, color="g")
+        for start, end, speaker in events["pred_shift_neg"][b]:
+            ax[1].axvline(start, linewidth=4, color="r")
+            ax[1].axvline(end, linewidth=4, color="r")
+        # Pred backchannel
+        for start, end, speaker in events["pred_backchannel"][b]:
+            ax[2].axvline(start, linewidth=4, color="g")
+            ax[2].axvline(end, linewidth=4, color="g")
+        for start, end, speaker in events["pred_backchannel_neg"][b]:
+            ax[2].axvline(start, linewidth=4, color="r")
+            ax[2].axvline(end, linewidth=4, color="r")
+        # Long / Short
+        for start, end, speaker in events["long"][b]:
+            ax[3].axvline(start, linewidth=4, color="g")
+            ax[3].axvline(end, linewidth=4, color="g")
+        for start, end, speaker in events["short"][b]:
+            ax[3].axvline(start, linewidth=4, color="r")
+            ax[3].axvline(end, linewidth=4, color="r")
+        for a, lab in zip(ax, ["SH", "Pred-S", "Pred-BC", "SL"]):
+            a.set_ylabel(lab)
+            a.axvline(eventer.min_context_frames, linewidth=4, color="k")
+            a.axvline(eventer.max_frames, linewidth=4, color="k")
+        plt.tight_layout()
+        plt.show()

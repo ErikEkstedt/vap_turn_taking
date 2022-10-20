@@ -522,7 +522,7 @@ class HoldShiftNew:
             "long": long,
             "pred_shift": pred_shift,
             "pred_hold": pred_hold,
-            "hold": pred_hold,
+            "hold": hold,
         }
 
 
