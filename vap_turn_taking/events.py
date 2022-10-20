@@ -233,10 +233,12 @@ class TurnTakingEventsNew:
         self,
         sh_pre_cond_time: float = 1.0,
         sh_post_cond_time: float = 1.0,
+        sh_prediction_region_on_active: bool = True,
         bc_pre_cond_time: float = 1.0,
         bc_post_cond_time: float = 1.0,
         bc_max_duration: float = 1.0,
-        sh_prediction_region_on_active: bool = True,
+        bc_negative_pad_left_time: float = 1.0,
+        bc_negative_pad_right_time: float = 2.0,
         prediction_region_time: float = 0.5,
         long_onset_region_time: float = 0.2,
         long_onset_condition_time: float = 1.0,
@@ -254,28 +256,40 @@ class TurnTakingEventsNew:
         self.metric_pad_time = metric_pad_time
         self.min_silence_time = metric_pad_time + metric_time
 
-        self.sh_pre_cond_frames = time_to_frames(sh_pre_cond_time, frame_hz)
-        self.sh_post_cond_frames = time_to_frames(sh_post_cond_time, frame_hz)
-        self.bc_pre_cond_frames = time_to_frames(bc_pre_cond_time, frame_hz)
-        self.bc_post_cond_frames = time_to_frames(bc_post_cond_time, frame_hz)
-        self.bc_max_duration = time_to_frames(bc_max_duration, frame_hz)
-        self.sh_prediction_region_on_active = sh_prediction_region_on_active
+        # Global
         self.prediction_region_frames = time_to_frames(prediction_region_time, frame_hz)
-        self.long_onset_region_frames = time_to_frames(long_onset_region_time, frame_hz)
-        self.long_onset_condition_frames = time_to_frames(
-            long_onset_condition_time, frame_hz
-        )
         self.min_context_frames = time_to_frames(min_context_time, frame_hz)
         self.metric_frames = time_to_frames(metric_time, frame_hz)
         self.metric_pad_frames = time_to_frames(metric_pad_time, frame_hz)
         self.max_frames = time_to_frames(max_time, frame_hz)
 
+        # Shift/Hold
+        self.sh_pre_cond_frames = time_to_frames(sh_pre_cond_time, frame_hz)
+        self.sh_post_cond_frames = time_to_frames(sh_post_cond_time, frame_hz)
+        self.sh_prediction_region_on_active = sh_prediction_region_on_active
+
+        # Backchannel
+        self.bc_pre_cond_frames = time_to_frames(bc_pre_cond_time, frame_hz)
+        self.bc_post_cond_frames = time_to_frames(bc_post_cond_time, frame_hz)
+        self.bc_negative_pad_left_frames = time_to_frames(
+            bc_negative_pad_left_time, frame_hz
+        )
+        self.bc_negative_pad_right_frames = time_to_frames(
+            bc_negative_pad_right_time, frame_hz
+        )
+        self.bc_max_duration = time_to_frames(bc_max_duration, frame_hz)
+
+        # Long/Short
+        self.long_onset_region_frames = time_to_frames(long_onset_region_time, frame_hz)
+        self.long_onset_condition_frames = time_to_frames(
+            long_onset_condition_time, frame_hz
+        )
+
         # Memory to add extra event in upcomming batches
         # if there is a discrepancy between
         # `pred_shift` & `pred_shift_neg` and
         # `pred_bc` & `pred_bc_neg` and
-        self.add_extra_pred_shift_neg = 0
-        self.add_extra = {"shift": 0, "pred_shift": 0}
+        self.add_extra = {"shift": 0, "pred_shift": 0, "pred_backchannel": 0}
 
         assert (
             min_context_time < max_time
@@ -298,6 +312,8 @@ class TurnTakingEventsNew:
             pre_cond_time=bc_pre_cond_time,
             post_cond_time=bc_post_cond_time,
             prediction_region_time=prediction_region_time,
+            negative_pad_left_time=bc_negative_pad_left_time,
+            negative_pad_right_time=bc_negative_pad_right_time,
             max_bc_duration=bc_max_duration,
             min_context_time=min_context_time,
             max_time=max_time,
@@ -306,55 +322,11 @@ class TurnTakingEventsNew:
 
     def __repr__(self) -> str:
         s = "TurnTakingEvents\n\n"
-        s += self.BC.__repr__()
+        s += self.BC.__repr__() + "\n"
         s += self.HS.__repr__()
         return s
 
-    def sample_pred_shift_negatives(self, ret):
-        """
-        Sample equal amount of `pred_hold` segments as `pred_shift` segments
-        found in the batch.
-
-        Generally we have a lot more `pred_hold` than `pred_shift`
-        """
-        batch_size = len(ret["shift"])
-
-        # Count number of SHIFT-PREDICTION events
-        n_pred_shift = sum([len(ps) for ps in ret["pred_shift"]])
-
-        # Create pred-shift-negatives
-        pred_shift_neg = [[] for _ in range(batch_size)]
-
-        # Extract all HOLD-prediction events
-        flat_pred_shift_neg = []
-        batch_idx = []
-        for b in range(batch_size):
-            flat_pred_shift_neg += ret["pred_hold"][b]
-            batch_idx += [b] * len(ret["pred_hold"][b])
-
-        n_pred_holds = len(flat_pred_shift_neg)
-
-        if n_pred_holds < n_pred_shift:
-            diff = n_pred_shift - n_pred_holds
-            self.add_extra_pred_shift_neg += diff
-            n_pred_shift = n_pred_holds
-
-        else:
-            diff = n_pred_holds - n_pred_shift
-            add_extra = min(diff, self.add_extra_pred_shift_neg)
-            n_pred_shift += add_extra  # add extra 'negatives'
-            # n_pred_holds += add_extra
-            self.add_extra_pred_shift_neg -= add_extra
-
-        # Choose random pred-hold samples
-        # Sample as many unique HOLD-predictions as SHIFT-predictions
-        for idx in random.sample(list(range(n_pred_holds)), k=n_pred_shift):
-            b = batch_idx[idx]
-            entry = flat_pred_shift_neg[idx]
-            pred_shift_neg[b].append(entry)
-        return pred_shift_neg
-
-    def sample_equal_amounts(self, a_set, b_set, event_type):
+    def sample_equal_amounts(self, a_set, b_set, event_type, is_backchannel=False):
         """Sample a subset from `b_set` of equal size of `a_set`"""
 
         batch_size = len(a_set)
@@ -387,6 +359,8 @@ class TurnTakingEventsNew:
         for idx in random.sample(list(range(len(b_set_flat))), k=n_to_sample):
             b = batch_idx[idx]
             entry = b_set_flat[idx]
+            if is_backchannel:
+                entry = self.BC.sample_negative_segment(entry)
             subset[b].append(entry)
         return subset
 
@@ -410,6 +384,17 @@ class TurnTakingEventsNew:
             ret["pred_shift"], ret["pred_hold"], event_type="pred_shift"
         )
 
+        # Sample equal amounts of "pred_backchannel_neg" as "pred_backchannel"
+        # `if_backchannel=True`:
+        #    from the found 'regions of possible negative backchannel prediction segments'
+        #    sample the actual region to be used
+        ret["pred_backchannel_neg"] = self.sample_equal_amounts(
+            ret["pred_backchannel"],
+            ret["pred_backchannel_neg"],
+            event_type="pred_backchannel",
+            is_backchannel=True,
+        )
+
         if self.equal_hold_shift:
             ret["hold"] = self.sample_equal_amounts(
                 ret["shift"], ret["hold"], event_type="shift"
@@ -428,7 +413,7 @@ def _old_main():
         hs_kwargs=event_conf["hs"],
         bc_kwargs=event_conf["bc"],
         metric_kwargs=event_conf["metric"],
-        frame_hz=100,
+        frame_hz=50,
     )
     va = example["va"]
     events = eventer(va, max_frame=None)
@@ -485,8 +470,10 @@ def _time_comparison():
     )
     eventer = TurnTakingEventsNew()
 
-    old = timeit.timeit("eventerOld(vad)", globals=globals(), number=200)
-    new = timeit.timeit("eventer(vad)", globals=globals(), number=200)
+    out = eventer(vad)
+
+    old = timeit.timeit("eventerOld(vad)", globals=globals(), number=50)
+    new = timeit.timeit("eventer(vad)", globals=globals(), number=50)
     print(f"OLD {round(old, 3)}s vs {round(new,3)}s NEW")
     if old > new:
         print(
@@ -506,13 +493,17 @@ if __name__ == "__main__":
     dm = DialogAudioDM(
         datasets=["switchboard", "fisher"],
         audio_duration=20,
-        batch_size=16,
-        num_workers=10,
+        batch_size=8,
+        num_workers=4,
     )
     dm.prepare_data()
     dm.setup()
 
     eventer = TurnTakingEventsNew()
+    print(eventer)
+    vad = torch.load("example/vap_data.pt")["bc"]["vad"]
+    events = eventer(vad)
+    events
 
     # batch = next(iter(dm.val_dataloader()))
     # ret = eventer(batch["vad"])
@@ -522,10 +513,10 @@ if __name__ == "__main__":
         "hold": 0,
         "pred_shift": 0,
         "pred_shift_neg": 0,
+        "pred_backchannel": 0,
+        "pred_backchannel_neg": 0,
         "long": 0,
         "short": 0,
-        "pred_bc": 0,
-        "pred_bc_neg": 0,
     }
     for batch in tqdm(dm.val_dataloader()):
         batch_size = batch["vad"].shape[0]
@@ -537,7 +528,8 @@ if __name__ == "__main__":
             n_events["short"] += len(events["short"][b])
             n_events["pred_shift"] += len(events["pred_shift"][b])
             n_events["pred_shift_neg"] += len(events["pred_shift_neg"][b])
-            n_events["pred_bc"] += len(events["pred_backchannel"][b])
+            n_events["pred_backchannel"] += len(events["pred_backchannel"][b])
+            n_events["pred_backchannel_neg"] += len(events["pred_backchannel_neg"][b])
             # n_events["pred_bc_neg"] += len(events["pred_backchannel_neg"][b])
     for k, v in n_events.items():
         print(f"{k}: {v}")
@@ -546,25 +538,16 @@ if __name__ == "__main__":
     for k, v in eventer.add_extra.items():
         print(f"Add extra '{k}': {v}")
 
-    b = 0
-
-    for b in range(vad.shape[0]):
-
-        fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
-        _ = plot_vad_oh(vad[b], ax=ax)
-        # _ = plot_vad_oh(filled_vad, ax=ax1)
-        ax.axvline(eventer.min_context_frames, linewidth=4, color="k")
-        ax.axvline(eventer.max_frames, linewidth=4, color="k")
-        # for start, end, speaker in events["shift"][b]:
-        #     ax.axvline(start, linewidth=4, color="g")
-        #     ax.axvline(end, linewidth=4, color="r")
-        # for start, end, speaker in events["hold"][b]:
-        #     ax.axvline(start, linewidth=4, linestyle="dashed", color="g")
-        #     ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
-        for start, end, speaker in events["pred_shift"][b]:
-            ax.axvline(start, linewidth=4, color="g")
-            ax.axvline(end, linewidth=4, color="g")
-        for start, end, speaker in events["pred_hold"][b]:
-            ax.axvline(start, linewidth=4, linestyle="dashed", color="r")
-            ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
-        plt.show()
+    # for b in range(vad.shape[0]):
+    #     fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
+    #     _ = plot_vad_oh(vad[b], ax=ax)
+    #     # _ = plot_vad_oh(filled_vad, ax=ax1)
+    #     ax.axvline(eventer.min_context_frames, linewidth=4, color="k")
+    #     ax.axvline(eventer.max_frames, linewidth=4, color="k")
+    #     for start, end, speaker in events["pred_shift"][b]:
+    #         ax.axvline(start, linewidth=4, color="g")
+    #         ax.axvline(end, linewidth=4, color="g")
+    #     for start, end, speaker in events["pred_hold"][b]:
+    #         ax.axvline(start, linewidth=4, linestyle="dashed", color="r")
+    #         ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
+    #     plt.show()

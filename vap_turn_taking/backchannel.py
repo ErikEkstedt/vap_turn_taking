@@ -1,9 +1,8 @@
 import torch
-
+import random
+from typing import Optional, Tuple
 import vap_turn_taking.functional as VF
 from vap_turn_taking.utils import time_to_frames, get_last_speaker
-
-from typing import Optional
 
 
 def find_isolated_within(vad, prefix_frames, max_duration_frames, suffix_frames):
@@ -169,19 +168,40 @@ class BackchannelNew:
         post_cond_time: float,
         prediction_region_time: float,
         min_context_time: float,
+        negative_pad_left_time: float,
+        negative_pad_right_time: float,
         max_bc_duration: float,
         max_time: float,
         frame_hz: int,
     ):
+
         self.pre_cond_time = pre_cond_time
         self.post_cond_time = post_cond_time
-        self.min_context_time = min_context_time
         self.max_bc_time = max_bc_duration
+        self.prediction_region_time = prediction_region_time
+        self.negatives_min_pad_left_time = negative_pad_left_time
+        self.negatives_min_pad_right_time = negative_pad_right_time
+        self.min_context_time = min_context_time
         self.max_time = max_time
+
+        assert (
+            prediction_region_time > 0
+        ), f"Requires positive value for `prediction_region_time` got {prediction_region_time}"
+
+        assert (
+            negative_pad_left_time + negative_pad_right_time < max_time
+        ), f"Negative padding duration exceeds `max_time` {max_time}"
 
         self.pre_cond_frame = time_to_frames(pre_cond_time, frame_hz)
         self.post_cond_frame = time_to_frames(post_cond_time, frame_hz)
         self.prediction_region_frames = time_to_frames(prediction_region_time, frame_hz)
+        self.negatives_min_pad_left_frames = time_to_frames(
+            negative_pad_left_time, frame_hz
+        )
+        self.negatives_min_pad_right_frames = time_to_frames(
+            negative_pad_right_time, frame_hz
+        )
+
         self.min_context_frame = time_to_frames(min_context_time, frame_hz)
         self.max_bc_frame = time_to_frames(max_bc_duration, frame_hz)
         self.max_frame = time_to_frames(max_time, frame_hz)
@@ -190,19 +210,32 @@ class BackchannelNew:
         s = "Backhannel"
         s += "\n----------"
         s += f"\n  Time:"
-        s += f"\n\tpre_cond_time            = {self.pre_cond_time}s"
-        s += f"\n\tpost_cond_time           = {self.post_cond_time}s"
-        s += f"\n\tmax_bc_time              = {self.max_bc_time}s"
-        s += f"\n\tmin_context_time         = {self.min_context_time}s"
-        s += f"\n\tmax_time                 = {self.max_time}s"
+        s += f"\n\tpre_cond_time              = {self.pre_cond_time}s"
+        s += f"\n\tpost_cond_time             = {self.post_cond_time}s"
+        s += f"\n\tmax_bc_time                = {self.max_bc_time}s"
+        s += f"\n\tnegatives_left_pad_time    = {self.negatives_min_pad_left_time}s"
+        s += f"\n\tnegatives_right_pad_time   = {self.negatives_min_pad_right_time}s"
+        s += f"\n\tmin_context_time           = {self.min_context_time}s"
+        s += f"\n\tmax_time                   = {self.max_time}s"
         s += f"\n  Frame:"
-        s += f"\n\tpre_cond_frame           = {self.pre_cond_frame}"
-        s += f"\n\tpost_cond_frame          = {self.post_cond_frame}"
-        s += f"\n\tprediction_region_frames = {self.prediction_region_frames}"
-        s += f"\n\tmax_bc_frame             = {self.max_bc_frame}"
-        s += f"\n\tmin_context_frame        = {self.min_context_frame}"
-        s += f"\n\tmax_frame                = {self.max_frame}"
+        s += f"\n\tpre_cond_frame             = {self.pre_cond_frame}"
+        s += f"\n\tpost_cond_frame            = {self.post_cond_frame}"
+        s += f"\n\tnegatives_left_pad_frames  = {self.negatives_min_pad_left_frames}"
+        s += f"\n\tnegatives_right_pad_frames = {self.negatives_min_pad_right_frames}"
+        s += f"\n\tprediction_region_frames   = {self.prediction_region_frames}"
+        s += f"\n\tmax_bc_frame               = {self.max_bc_frame}"
+        s += f"\n\tmin_context_frame          = {self.min_context_frame}"
+        s += f"\n\tmax_frame                  = {self.max_frame}"
         return s
+
+    def sample_negative_segment(
+        self, region: Tuple[int, int, int]
+    ) -> Tuple[int, int, int]:
+        region_start, region_end, speaker = region
+        max_end = region_end - self.prediction_region_frames
+        segment_start = random.randint(region_start, max_end)
+        segment_end = segment_start + self.prediction_region_frames
+        return (segment_start, segment_end, speaker)
 
     def __call__(self, vad: torch.Tensor, ds: Optional[torch.Tensor] = None):
         batch_size = vad.shape[0]
@@ -210,10 +243,10 @@ class BackchannelNew:
         if ds is None:
             ds = VF.get_dialog_states(vad)
 
-        backchannel = []
-        pred_backchannel = []
+        backchannel, pred_backchannel = [], []
+        pred_backchannel_neg = []
         for b in range(batch_size):
-            sample_bc = VF.backchannel_regions(
+            bc_samples = VF.backchannel_regions(
                 vad[b],
                 ds=ds[b],
                 pre_cond_frames=self.pre_cond_frame,
@@ -223,9 +256,25 @@ class BackchannelNew:
                 max_bc_frames=self.max_bc_frame,
                 max_frame=self.max_frame,
             )
-            backchannel.append(sample_bc["backchannel"])
-            pred_backchannel.append(sample_bc["pred_backchannel"])
-        return {"backchannel": backchannel, "pred_backchannel": pred_backchannel}
+
+            bc_negative_regions = VF.get_negative_sample_regions(
+                vad=vad[b],
+                ds=ds[b],
+                min_pad_left_frames=self.negatives_min_pad_left_frames,
+                min_pad_right_frames=self.negatives_min_pad_right_frames,
+                min_region_frames=self.prediction_region_frames,
+                min_context_frames=self.min_context_frame,
+                only_on_active=False,
+                max_frames=self.max_frame,
+            )
+            backchannel.append(bc_samples["backchannel"])
+            pred_backchannel.append(bc_samples["pred_backchannel"])
+            pred_backchannel_neg.append(bc_negative_regions)
+        return {
+            "backchannel": backchannel,
+            "pred_backchannel": pred_backchannel,
+            "pred_backchannel_neg": pred_backchannel_neg,
+        }
 
 
 def _old_main():
@@ -276,11 +325,20 @@ def _time_comparison():
 
     bc_kwargs = event_conf_frames["bc"]
     BC_OLD = Backchannel(**bc_kwargs)
-    BC = BackchannelNew()
+    BC = BackchannelNew(
+        pre_cond_time=1,
+        post_cond_time=1,
+        prediction_region_time=0.5,
+        negative_pad_left_time=1,
+        negative_pad_right_time=2,
+        min_context_time=3,
+        max_bc_duration=1,
+        max_time=10,
+        frame_hz=50,
+    )
 
-    old = timeit.timeit("BC_OLD(vad)", globals=globals(), number=200)
-    new = timeit.timeit("BC(vad)", globals=globals(), number=200)
-
+    old = timeit.timeit("BC_OLD(vad)", globals=globals(), number=50)
+    new = timeit.timeit("BC(vad)", globals=globals(), number=50)
     print(f"OLD {round(old, 3)}s vs {round(new,3)}s NEW")
     if old > new:
         print(f"NEW approach is {round(old/new,3)} times faster!")
@@ -292,6 +350,29 @@ def _time_comparison():
 
 if __name__ == "__main__":
 
-    BC = BackchannelNew()
+    BC = BackchannelNew(
+        pre_cond_time=1.0,
+        post_cond_time=1.0,
+        max_bc_duration=1.0,
+        negative_pad_left_time=1.0,
+        negative_pad_right_time=2.0,
+        prediction_region_time=0.5,
+        min_context_time=3,
+        max_time=10,
+        frame_hz=50,
+    )
     vad = torch.load("example/vap_data.pt")["bc"]["vad"]
     bcs = BC(vad)
+
+    # sample actual negative prediction segment from possible region
+
+    # from a single possibility region sample the actual prediction segment
+
+    batch = 0
+    n_region_in_sample = 0
+    region = bcs["pred_backchannel_neg"][batch][n_region_in_sample]
+    segment = BC.sample_negative_segment(region)
+
+    print("segment_start: ", segment[0])
+    print("segment_end: ", segment[1])
+    print("segment_speakr: ", segment[2])

@@ -169,7 +169,7 @@ def get_hs_regions(
         return [], [], []
 
     for last_onset, next_speaker in zip(steps, next_speakers):
-        not_next_speaker = 0 if next_speaker == 1 else 1
+        not_next_speaker = int(not next_speaker)
         prev_speaker = next_speaker if hold_cond else not_next_speaker
         not_prev_speaker = 0 if prev_speaker == 1 else 1
         # All shift triads e.g. [3, 1, 0] centers on the silence segment
@@ -231,7 +231,7 @@ def get_hs_regions(
         ################################################
         # ALL CONDITIONS MET
         ################################################
-        region.append((sil_start.item(), onset_start.item(), next_speaker))
+        region.append((sil_start.item(), onset_start.item(), next_speaker.item()))
 
         ################################################
         # LONG ONSET CONDITION
@@ -247,8 +247,8 @@ def get_hs_regions(
             long_onset_region.append(
                 (
                     onset_start.item(),
-                    onset_start.item() + long_onset_region_frames,
-                    next_speaker,
+                    (onset_start + long_onset_region_frames).item(),
+                    next_speaker.item(),
                 )
             )
 
@@ -272,7 +272,7 @@ def get_hs_regions(
                 continue
 
         # that if the last activity
-        prediction_start = sil_start.item() - prediction_region_frames
+        prediction_start = sil_start - prediction_region_frames
 
         ################################################
         # MINIMAL CONTEXT CONDITION (PREDICTION)
@@ -280,7 +280,9 @@ def get_hs_regions(
         if prediction_start < min_context_frames:
             continue
 
-        prediction_region.append((prediction_start, sil_start.item(), next_speaker))
+        prediction_region.append(
+            (prediction_start.item(), sil_start.item(), next_speaker.item())
+        )
 
     return region, prediction_region, long_onset_region
 
@@ -416,18 +418,91 @@ def backchannel_regions(
             # ALL CONDITIONS MET
             ################################################
             # Is the other speakr active before this segment?
-            backchannel.append((start_of[bc], start_of[post_silence], speaker))
+            backchannel.append(
+                (start_of[bc].item(), start_of[post_silence].item(), speaker)
+            )
 
             pred_bc_start = start_of[bc] - prediction_region_frames
             if pred_bc_start < min_context_frames:
                 continue
 
-            pred_backchannel.append((pred_bc_start, start_of[bc], speaker))
+            pred_backchannel.append(
+                (pred_bc_start.item(), start_of[bc].item(), speaker)
+            )
 
     return {"backchannel": backchannel, "pred_backchannel": pred_backchannel}
 
 
-def negative_sample_regions(
-    vad: torch.Tensor, padding_prior_activity_frames: int, on_active: bool = False
-):
-    pass
+def get_negative_sample_regions(
+    vad: torch.Tensor,
+    ds: torch.Tensor,
+    min_pad_left_frames: int,
+    min_pad_right_frames: int,
+    min_region_frames: int,
+    min_context_frames: int,
+    only_on_active: bool,
+    max_frames: int,
+) -> List[Tuple[int, int, int]]:
+    min_dur_frames = min_pad_left_frames + min_pad_right_frames
+
+    # if only_on_active:
+    #     raise NotImplementedError(
+    #         "`get_negative_regions` have not implemented `only_on_active=True` "
+    #     )
+
+    # fill pauses o recognize 'longer' segments of activity (including pauses)
+    filled_vad = fill_pauses(vad, ds)
+    ds_fill = get_dialog_states(filled_vad)
+    index_of, duration_of, state_of = find_island_idx_len(ds_fill)
+
+    neg_regions = []
+    for current_speaker, current_speaker_state in enumerate(
+        [STATE_ONLY_A, STATE_ONLY_B]
+    ):
+        next_potential_speaker = int(not current_speaker)
+        dur = duration_of[state_of == current_speaker_state]
+        idx = index_of[state_of == current_speaker_state]
+
+        # iterate over all segments of longer activity
+        for i, d in zip(idx, dur):
+            ################################################
+            # MINIMAL CONTEXT CONDITION
+            ################################################
+            # The total activity must allow for padding
+            if d < min_dur_frames:
+                continue
+
+            # if only_on_active:
+            #     print("NOT IMPLEMNTED")
+
+            # START of region after `min_active_frames`
+            start = (i + min_pad_left_frames).item()
+            ################################################
+            # CONTEXT (global/model) CONDITION
+            ################################################
+            # START of region must be after `min_context_frames`
+            if start < min_context_frames:
+                start = min_context_frames
+
+            # END of region prior to `min_pad_to_next_frames`
+            end = (i + d - min_pad_right_frames).item()
+
+            ################################################
+            # MAXIMAL FRAME
+            ################################################
+            # end region can't span across last valid frame
+            if end > max_frames:
+                end = max_frames
+
+            ################################################
+            # REGION SIZE
+            ################################################
+            # Is the final potential region larger than
+            # the minimal required frames?
+            # Also handles if end < start  (i.e. min_region_frames > 0)
+            if end - start < min_region_frames:
+                continue
+
+            neg_regions.append((start, end, next_potential_speaker))
+
+    return neg_regions

@@ -35,6 +35,8 @@ def test_backchannel_new():
         pre_cond_time=1.0,
         post_cond_time=1.0,
         prediction_region_time=0.2,
+        negative_pad_left_time=1.0,
+        negative_pad_right_time=2.0,
         max_bc_duration=1.0,
         min_context_time=3.0,
         max_time=10.0,

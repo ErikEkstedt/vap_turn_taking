@@ -451,37 +451,42 @@ def test_long_short(data):
         ), f"Wrong number of 'long' regions recovered {n_long_found} != {n_long}"
 
 
-# @pytest.mark.functional
-# def test_negative_samples(data):
-#     vad = data['shift']['vad'][0]
-#     vad = torch.cat(
-#         (
-#             data["shift"]["vad"],
-#             data["only_hold"]["vad"],
-#             data["bc"]["vad"],
-#         )
-#     )
-#     ds = VF.get_dialog_states(vad)
-#     filled_vad = VF.fill_pauses(vad, ds)
-#     ds_fill = VF.get_dialog_states(filled_vad)
-#     speaker_a_segments = ds_fill == VF.STATE_ONLY_A
-#     import matplotlib.pyplot as plt
-#     from vap_turn_taking.plot_utils import plot_vad_oh
-#     fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
-#     _ = plot_vad_oh(vad, ax=ax)
-#     # _ = plot_vad_oh(filled_vad, ax=ax1)
-#     ax.axvline(MIN_CONTEXT_FRAMES, linewidth=4, color="k")
-#     ax.axvline(MAX_FRAME, linewidth=4, color="k")
-#     for start, end, speaker in sh["pred_shift"]:
-#         ax.axvline(start, linewidth=4, color="g")
-#         ax.axvline(end, linewidth=4, color="r")
-#     for start, end, speaker in sh["pred_hold"]:
-#         ax.axvline(start, linewidth=4, linestyle="dashed", color="g")
-#         ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
-#     for start, end, speaker in sh["shift"]:
-#         ax.axvline(start, linewidth=4, color="g")
-#         ax.axvline(end, linewidth=4, color="r")
-#     for start, end, speaker in sh["hold"]:
-#         ax.axvline(start, linewidth=4, linestyle="dashed", color="g")
-#         ax.axvline(end, linewidth=4, linestyle="dashed", color="r")
-#     plt.show()
+@pytest.mark.functional
+def test_negative_samples_bc(data):
+    # import matplotlib.pyplot as plt
+    # from vap_turn_taking.plot_utils import plot_vad_oh
+    # filled_vad = VF.fill_pauses(vad, ds)
+    # fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
+    # _ = plot_vad_oh(vad, ax=ax)
+    # _ = plot_vad_oh(filled_vad, ax=ax1)
+    # ax.axvline(MIN_CONTEXT_FRAMES, linewidth=4, color="k")
+    # ax.axvline(vad.shape[0] - 100, linewidth=4, color="k")
+    # for start, end, speaker in neg_regions:
+    #     ymin, ymax = 0, 1
+    #     if speaker == 1:
+    #         ymin, ymax = -1, 0
+    #     ax1.vlines(start, ymin=ymin, ymax=ymax, color="g", linewidth=2)
+    #     ax1.vlines(end, ymin=ymin, ymax=ymax, color="r", linewidth=2)
+    # plt.pause(0.1)
+
+    labels = {"bc": (361, 500, 0), "shift": (268, 491, 0), "only_hold": (150, 500, 0)}
+    for k in ["bc", "shift", "only_hold"]:
+        vad = data[k]["vad"][0]
+        label = labels[k]
+        ds = VF.get_dialog_states(vad)
+        neg_regions = VF.get_negative_sample_regions(
+            vad,
+            ds,
+            min_pad_left_frames=50,
+            min_pad_right_frames=100,
+            min_region_frames=30,
+            min_context_frames=150,
+            only_on_active=False,
+            max_frames=500,
+        )
+        assert (
+            len(neg_regions) == 1
+        ), f"Got wrong number of negative regions {len(neg_regions)} != 1"
+        assert (
+            neg_regions[0] == label
+        ), f"Got wrong negative region {neg_regions[0]} != {label}"
