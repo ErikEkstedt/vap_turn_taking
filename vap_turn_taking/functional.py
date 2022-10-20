@@ -26,6 +26,10 @@ def get_dialog_states(vad: torch.Tensor) -> torch.Tensor:
     return (2 * vad[..., 1] - vad[..., 0]).long() + 1
 
 
+def bin_times_to_frames(bin_times: List[float], frame_hz: int) -> List[int]:
+    return (torch.tensor(bin_times) * frame_hz).long().tolist()
+
+
 def find_island_idx_len(
     x: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

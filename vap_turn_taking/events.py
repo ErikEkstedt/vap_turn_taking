@@ -499,12 +499,12 @@ if __name__ == "__main__":
     dm.prepare_data()
     dm.setup()
 
-    eventer = TurnTakingEventsNew(max_time=dm.audio_duration)
+    eventer = TurnTakingEventsNew(sh_post_cond_time=2, max_time=dm.audio_duration)
 
     # batch = next(iter(dm.val_dataloader()))
     # ret = eventer(batch["vad"])
 
-    n_max_batches = 200
+    n_max_batches = 10
     n_events = {
         "shift": 0,
         "hold": 0,
@@ -537,6 +537,7 @@ if __name__ == "__main__":
     for k, v in eventer.add_extra.items():
         print(f"Add extra '{k}': {v}")
 
+    # batch number 10 from ['switchboard', 'fisher'] seems good to plot
     # Plot all events
     for b in range(len(events["shift"])):
         fig, ax = plt.subplots(4, 1, figsize=(9, 6))
