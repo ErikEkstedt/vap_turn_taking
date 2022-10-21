@@ -237,8 +237,16 @@ class BackchannelNew:
         segment_end = segment_start + self.prediction_region_frames
         return (segment_start, segment_end, speaker)
 
-    def __call__(self, vad: torch.Tensor, ds: Optional[torch.Tensor] = None):
+    def __call__(
+        self,
+        vad: torch.Tensor,
+        ds: Optional[torch.Tensor] = None,
+        max_frame: Optional[int] = None,
+    ):
         batch_size = vad.shape[0]
+
+        if max_frame is None:
+            max_frame = self.max_frame
 
         if ds is None:
             ds = VF.get_dialog_states(vad)
@@ -254,7 +262,7 @@ class BackchannelNew:
                 min_context_frames=self.min_context_frame,
                 prediction_region_frames=self.prediction_region_frames,
                 max_bc_frames=self.max_bc_frame,
-                max_frame=self.max_frame,
+                max_frame=max_frame,
             )
 
             bc_negative_regions = VF.get_negative_sample_regions(
@@ -265,7 +273,7 @@ class BackchannelNew:
                 min_region_frames=self.prediction_region_frames,
                 min_context_frames=self.min_context_frame,
                 only_on_active=False,
-                max_frames=self.max_frame,
+                max_frame=max_frame,
             )
             backchannel.append(bc_samples["backchannel"])
             pred_backchannel.append(bc_samples["pred_backchannel"])

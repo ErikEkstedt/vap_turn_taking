@@ -484,11 +484,17 @@ class HoldShiftNew:
 
     @torch.no_grad()
     def __call__(
-        self, vad: torch.Tensor, ds: Optional[torch.Tensor] = None
+        self,
+        vad: torch.Tensor,
+        ds: Optional[torch.Tensor] = None,
+        max_frame: Optional[int] = None,
     ) -> Dict[str, List[List[Tuple[int, int, int]]]]:
         assert (
             vad.ndim == 3
         ), f"Expected vad.ndim=3 (B, N_FRAMES, 2) but got {vad.shape}"
+
+        if max_frame is None:
+            max_frame = self.max_frame
 
         batch_size = vad.shape[0]
 
@@ -509,7 +515,7 @@ class HoldShiftNew:
                 long_onset_condition_frames=self.long_onset_condition_frames,
                 min_silence_frames=self.min_silence_frame,
                 min_context_frames=self.min_context_frame,
-                max_frame=self.max_frame,
+                max_frame=max_frame,
             )
             shift.append(tmp_sh["shift"])
             hold.append(tmp_sh["hold"])

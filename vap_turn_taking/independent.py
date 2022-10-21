@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import vap_turn_taking.functional as VF
-from vap_turn_taking.probabilities import Probs
+from vap_turn_taking.objective_utils import Probs, extract_prediction_and_targets
 from vap_turn_taking.projection_window import ProjectionWindow
 
 
@@ -72,6 +72,14 @@ class ComparativeVAP(nn.Module):
         if n_frames_logits > n_frames_labels:
             logits = logits[:, :n_frames_labels]
         return F.binary_cross_entropy_with_logits(logits, labels, reduction=reduction)
+
+    def extract_prediction_and_targets(
+        self,
+        p: torch.Tensor,
+        p_bc: torch.Tensor,
+        events: Dict[str, List[List[Tuple[int, int, int]]]],
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+        return extract_prediction_and_targets(p=p, p_bc=p_bc, events=events)
 
     def forward(
         self, logits: torch.Tensor, va: torch.Tensor
@@ -198,6 +206,14 @@ class IndependentVAP(nn.Module):
 
     def extract_labels(self, va: torch.Tensor) -> torch.Tensor:
         return self.projection_window_extractor(va)
+
+    def extract_prediction_and_targets(
+        self,
+        p: torch.Tensor,
+        p_bc: torch.Tensor,
+        events: Dict[str, List[List[Tuple[int, int, int]]]],
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+        return extract_prediction_and_targets(p=p, p_bc=p_bc, events=events)
 
     def loss_fn(
         self, logits: torch.Tensor, labels: torch.Tensor, reduction: str = "mean"

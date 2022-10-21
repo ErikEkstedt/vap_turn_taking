@@ -2,7 +2,7 @@ import torch
 import numpy.random as np_random
 import random
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 from vap_turn_taking.backchannel import Backchannel, BackchannelNew
 import vap_turn_taking.functional as VF
@@ -373,7 +373,7 @@ class TurnTakingEventsNew:
 
     @torch.no_grad()
     def __call__(
-        self, vad: torch.Tensor
+        self, vad: torch.Tensor, max_frame: Optional[int] = None
     ) -> Dict[str, List[List[Tuple[int, int, int]]]]:
         assert (
             vad.ndim == 3
@@ -381,15 +381,14 @@ class TurnTakingEventsNew:
         ret = {}
 
         ds = VF.get_dialog_states(vad)
-        bc = self.BC(vad, ds=ds)
-        hs = self.HS(vad, ds=ds)
+        bc = self.BC(vad, ds=ds, max_frame=max_frame)
+        hs = self.HS(vad, ds=ds, max_frame=max_frame)
 
         ret.update(bc)
         ret.update(hs)
 
         # Sample equal amounts of "pre-hold" regions as "pre-shift"
         # ret["pred_shift_neg"] = self.sample_pred_shift_negatives(ret)
-
         n_pred_shift_negs_to_sample = self.get_total_ranges(ret["pred_shift"])
         ret["pred_shift_neg"] = self.sample_equal_amounts(
             n_pred_shift_negs_to_sample, ret["pred_hold"], event_type="pred_shift"
@@ -397,10 +396,6 @@ class TurnTakingEventsNew:
         ret.pop("pred_hold")  # remove all pred_hold regions
 
         # Sample equal amounts of "pred_backchannel_neg" as "pred_backchannel"
-        # `if_backchannel=True`:
-        #    from the found 'regions of possible negative backchannel prediction segments'
-        #    sample the actual region to be used
-
         n_pred_bc_negs_to_sample = self.get_total_ranges(ret["pred_shift"])
         ret["pred_backchannel_neg"] = self.sample_equal_amounts(
             n_pred_bc_negs_to_sample,

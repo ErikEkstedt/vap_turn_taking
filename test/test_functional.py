@@ -482,7 +482,7 @@ def test_negative_samples_bc(data):
             min_region_frames=30,
             min_context_frames=150,
             only_on_active=False,
-            max_frames=500,
+            max_frame=500,
         )
         assert (
             len(neg_regions) == 1

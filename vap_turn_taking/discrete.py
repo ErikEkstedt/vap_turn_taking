@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
-from vap_turn_taking.probabilities import Probs
+from vap_turn_taking.objective_utils import Probs, extract_prediction_and_targets
 from vap_turn_taking.projection_window import ProjectionWindow
 import vap_turn_taking.functional as VF
 
@@ -107,6 +107,8 @@ class DiscreteVAP(nn.Module):
         self.n_bins: int = len(self.bin_frames)
         self.total_bins: int = self.n_bins * 2
         self.n_classes: int = 2 ** self.total_bins
+        self.horizon = sum(self.bin_frames)
+        self.horizon_time = sum(bin_times)
 
         # make projection windows
         self.projection_window_extractor = ProjectionWindow(
@@ -312,6 +314,14 @@ class DiscreteVAP(nn.Module):
         projection_windows = self.projection_window_extractor(va)
         return self.proj_win_to_idx(projection_windows)
 
+    def extract_prediction_and_targets(
+        self,
+        p: torch.Tensor,
+        p_bc: torch.Tensor,
+        events: Dict[str, List[List[Tuple[int, int, int]]]],
+    ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+        return extract_prediction_and_targets(p=p, p_bc=p_bc, events=events)
+
     def loss_fn(
         self, logits: torch.Tensor, labels: torch.Tensor, reduction: str = "mean"
     ) -> torch.Tensor:
@@ -341,8 +351,11 @@ class DiscreteVAP(nn.Module):
             loss = rearrange(loss, "(b n) -> b n", n=n)
         return loss
 
+    def logits_to_probs(self, logits):
+        return logits.softmax(dim=-1)
+
     def forward(
-        self, logits: torch.Tensor, va: torch.Tensor
+        self, logits: torch.Tensor, va: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Extracts labels from the voice-activity, va.
@@ -365,11 +378,16 @@ class DiscreteVAP(nn.Module):
 
         # LABELS
         # Extract projection windows -> label indicies (B, N_VALID_FRAMES)
+
+        if va is None:
+            probs = self.logits_to_probs(logits)
+            return {"probs": probs}
+
         labels = self.extract_labels(va)
         n_valid_frames = labels.shape[-1]
 
         # Probs
-        probs = logits[..., :n_valid_frames, :].softmax(dim=-1)
+        probs = self.logits_to_probs(logits[..., :n_valid_frames, :])
         p = self.probs_next_speaker(probs=probs, va=va[..., :n_valid_frames, :])
         p_bc = self.probs_backchannel(probs)
         return {"probs": probs, "p": p, "p_bc": p_bc, "labels": labels}

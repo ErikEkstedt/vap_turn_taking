@@ -14,6 +14,8 @@ STATE_ONLY_B: int = 3
 STATE_SILENCE: int = 1
 STATE_BOTH: int = 2
 
+# TODO: CUDA
+
 
 def get_dialog_states(vad: torch.Tensor) -> torch.Tensor:
     """Vad to the full state of a 2 person vad dialog
@@ -445,7 +447,7 @@ def get_negative_sample_regions(
     min_region_frames: int,
     min_context_frames: int,
     only_on_active: bool,
-    max_frames: int,
+    max_frame: int,
 ) -> List[Tuple[int, int, int]]:
     min_dur_frames = min_pad_left_frames + min_pad_right_frames
 
@@ -495,8 +497,8 @@ def get_negative_sample_regions(
             # MAXIMAL FRAME
             ################################################
             # end region can't span across last valid frame
-            if end > max_frames:
-                end = max_frames
+            if end > max_frame:
+                end = max_frame
 
             ################################################
             # REGION SIZE
