@@ -2,6 +2,8 @@ import torch
 import numpy.random as np_random
 import random
 
+from typing import Dict, List, Tuple
+
 from vap_turn_taking.backchannel import Backchannel, BackchannelNew
 import vap_turn_taking.functional as VF
 from vap_turn_taking.hold_shifts import HoldShift, HoldShiftNew
@@ -228,6 +230,7 @@ class TurnTakingEvents:
         }
 
 
+# TODO: Implement metric_pad+metric_frames regions (now we take the entire silence for hold/shift)
 class TurnTakingEventsNew:
     def __init__(
         self,
@@ -326,11 +329,15 @@ class TurnTakingEventsNew:
         s += self.HS.__repr__()
         return s
 
-    def sample_equal_amounts(self, a_set, b_set, event_type, is_backchannel=False):
-        """Sample a subset from `b_set` of equal size of `a_set`"""
+    def get_total_ranges(self, a):
+        return sum([len(events) for events in a])
 
-        batch_size = len(a_set)
-        n_to_sample = sum([len(events) for events in a_set])
+    def sample_equal_amounts(
+        self, n_to_sample, b_set, event_type, is_backchannel=False
+    ):
+        """Sample a subset from `b_set` of size of `n_to_sample`"""
+
+        batch_size = len(b_set)
 
         # Create empty set
         subset = [[] for _ in range(batch_size)]
@@ -365,7 +372,9 @@ class TurnTakingEventsNew:
         return subset
 
     @torch.no_grad()
-    def __call__(self, vad: torch.Tensor):
+    def __call__(
+        self, vad: torch.Tensor
+    ) -> Dict[str, List[List[Tuple[int, int, int]]]]:
         assert (
             vad.ndim == 3
         ), f"Expects vad of shape (B, N_FRAMES, 2) but got {vad.shape}"
@@ -380,24 +389,30 @@ class TurnTakingEventsNew:
 
         # Sample equal amounts of "pre-hold" regions as "pre-shift"
         # ret["pred_shift_neg"] = self.sample_pred_shift_negatives(ret)
+
+        n_pred_shift_negs_to_sample = self.get_total_ranges(ret["pred_shift"])
         ret["pred_shift_neg"] = self.sample_equal_amounts(
-            ret["pred_shift"], ret["pred_hold"], event_type="pred_shift"
+            n_pred_shift_negs_to_sample, ret["pred_hold"], event_type="pred_shift"
         )
+        ret.pop("pred_hold")  # remove all pred_hold regions
 
         # Sample equal amounts of "pred_backchannel_neg" as "pred_backchannel"
         # `if_backchannel=True`:
         #    from the found 'regions of possible negative backchannel prediction segments'
         #    sample the actual region to be used
+
+        n_pred_bc_negs_to_sample = self.get_total_ranges(ret["pred_shift"])
         ret["pred_backchannel_neg"] = self.sample_equal_amounts(
-            ret["pred_backchannel"],
+            n_pred_bc_negs_to_sample,
             ret["pred_backchannel_neg"],
             event_type="pred_backchannel",
             is_backchannel=True,
         )
 
         if self.equal_hold_shift:
+            n_holds_to_sample = self.get_total_ranges(ret["shift"])
             ret["hold"] = self.sample_equal_amounts(
-                ret["shift"], ret["hold"], event_type="shift"
+                n_holds_to_sample, ret["hold"], event_type="shift"
             )
         # renames
         ret["short"] = ret.pop("backchannel")

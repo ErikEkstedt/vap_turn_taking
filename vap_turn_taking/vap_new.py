@@ -32,6 +32,51 @@ class VAP:
             )
 
 
+def __ind_main():
+    import torch
+
+    data = torch.load("example/vap_data.pt")
+
+    vap_objective = VAP(objective="independent")
+    print()
+    print(vap_objective)
+    vad = data["shift"]["vad"]
+    logits = torch.randn((1, 500, 2, vap_objective.n_bins))
+    out = vap_objective(logits, vad)
+    labels = vap_objective.extract_labels(vad)
+    loss = vap_objective.loss_fn(logits, labels)
+    print("-" * 45)
+    print("vad: ", tuple(vad.shape))
+    print("logits: ", tuple(logits.shape))
+    print("labels: ", tuple(labels.shape))
+    print("out['labels']: ", tuple(out["labels"].shape))
+    print("out['probs']: ", tuple(out["probs"].shape))
+    print("out['p']: ", tuple(out["p"].shape))
+    print("out['p_bc']: ", tuple(out["p_bc"].shape))
+    print("Loss: ", loss)
+    print("-" * 45)
+    pass
+
+
+def __comp_main():
+    vap_objective = VAP(objective="comparative")
+    print()
+    print(vap_objective)
+    vad = data["shift"]["vad"]
+    logits = torch.randn((1, 500))
+    out = vap_objective(logits, vad)
+    labels = vap_objective.extract_labels(vad)
+    loss = vap_objective.loss_fn(logits, labels)
+    print("-" * 45)
+    print("vad: ", tuple(vad.shape))
+    print("logits: ", tuple(logits.shape))
+    print("labels: ", tuple(labels.shape))
+    print("out['labels']: ", tuple(out["labels"].shape))
+    print("out['probs']: ", tuple(out["probs"].shape))
+    print("out['p']: ", tuple(out["p"].shape))
+    print("-" * 45)
+
+
 if __name__ == "__main__":
 
     import torch
@@ -55,40 +100,4 @@ if __name__ == "__main__":
     print("out['p']: ", tuple(out["p"].shape))
     print("out['p_bc']: ", tuple(out["p_bc"].shape))
     print("Loss: ", loss)
-    print("-" * 45)
-
-    vap_objective = VAP(objective="independent")
-    print()
-    print(vap_objective)
-    vad = data["shift"]["vad"]
-    logits = torch.randn((1, 500, 2, vap_objective.n_bins))
-    out = vap_objective(logits, vad)
-    labels = vap_objective.extract_labels(vad)
-    loss = vap_objective.loss_fn(logits, labels)
-    print("-" * 45)
-    print("vad: ", tuple(vad.shape))
-    print("logits: ", tuple(logits.shape))
-    print("labels: ", tuple(labels.shape))
-    print("out['labels']: ", tuple(out["labels"].shape))
-    print("out['probs']: ", tuple(out["probs"].shape))
-    print("out['p']: ", tuple(out["p"].shape))
-    print("out['p_bc']: ", tuple(out["p_bc"].shape))
-    print("Loss: ", loss)
-    print("-" * 45)
-
-    vap_objective = VAP(objective="comparative")
-    print()
-    print(vap_objective)
-    vad = data["shift"]["vad"]
-    logits = torch.randn((1, 500))
-    out = vap_objective(logits, vad)
-    labels = vap_objective.extract_labels(vad)
-    loss = vap_objective.loss_fn(logits, labels)
-    print("-" * 45)
-    print("vad: ", tuple(vad.shape))
-    print("logits: ", tuple(logits.shape))
-    print("labels: ", tuple(labels.shape))
-    print("out['labels']: ", tuple(out["labels"].shape))
-    print("out['probs']: ", tuple(out["probs"].shape))
-    print("out['p']: ", tuple(out["p"].shape))
     print("-" * 45)

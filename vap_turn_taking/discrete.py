@@ -103,10 +103,10 @@ class DiscreteVAP(nn.Module):
     ):
         super().__init__()
         self.frame_hz = frame_hz
-        self.bin_frames = VF.bin_times_to_frames(bin_times, frame_hz)
-        self.n_bins = len(self.bin_frames)
-        self.total_bins = self.n_bins * 2
-        self.n_classes = 2 ** self.total_bins
+        self.bin_frames: List[int] = VF.bin_times_to_frames(bin_times, frame_hz)
+        self.n_bins: int = len(self.bin_frames)
+        self.total_bins: int = self.n_bins * 2
+        self.n_classes: int = 2 ** self.total_bins
 
         # make projection windows
         self.projection_window_extractor = ProjectionWindow(

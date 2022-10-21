@@ -1,6 +1,8 @@
 import torch
 from torchmetrics import Metric, F1Score, PrecisionRecallCurve, StatScores
 
+from typing import Dict, List, Tuple
+
 from vap_turn_taking.events import TurnTakingEvents
 
 
@@ -465,6 +467,211 @@ def main_old():
 
     for k, v in result.items():
         print(f"{k}: {v}")
+
+
+def extract_prediction_and_targets(
+    p: torch.Tensor,
+    p_bc: torch.Tensor,
+    events: Dict[str, List[List[Tuple[int, int, int]]]],
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    batch_size = len(events["hold"])
+
+    preds = {"hs": [], "pred_shift": [], "ls": [], "pred_backchannel": []}
+    targets = {"hs": [], "pred_shift": [], "ls": [], "pred_backchannel": []}
+    for b in range(batch_size):
+        ###########################################
+        # Hold vs Shift
+        ###########################################
+        # The metrics (i.e. shift/hold) are binary so we must decide
+        # which 'class' corresponds to which numeric label
+        # we use Holds=0, Shifts=1
+        for start, end, speaker in events["shift"][b]:
+            pshift = p[b, start:end, speaker]
+            preds["hs"].append(pshift)
+            targets["hs"].append(torch.ones_like(pshift))
+        for start, end, speaker in events["hold"][b]:
+            phold = 1 - p[b, start:end, speaker]
+            preds["hs"].append(phold)
+            targets["hs"].append(torch.zeros_like(phold))
+        ###########################################
+        # Shift-prediction
+        ###########################################
+        for start, end, speaker in events["pred_shift"][b]:
+            # prob of next speaker -> the correct next speaker i.e. a SHIFT
+            pshift = p[b, start:end, speaker]
+            preds["pred_shift"].append(pshift)
+            targets["pred_shift"].append(torch.ones_like(pshift))
+        for start, end, speaker in events["pred_shift_neg"][b]:
+            # prob of next speaker -> the correct next speaker i.e. a HOLD
+            phold = 1 - p[b, start:end, speaker]  # 1-shift = Hold
+            preds["pred_shift"].append(phold)
+            # Negatives are zero -> hold predictions
+            targets["pred_shift"].append(torch.zeros_like(phold))
+        ###########################################
+        # Backchannel-prediction
+        ###########################################
+        for start, end, speaker in events["pred_backchannel"][b]:
+            # prob of next speaker -> the correct next backchanneler i.e. a Backchannel
+            pred_bc = p_bc[b, start:end, speaker]
+            preds["pred_backchannel"].append(pred_bc)
+            targets["pred_backchannel"].append(torch.ones_like(pred_bc))
+        for start, end, speaker in events["pred_backchannel_neg"][b]:
+            # prob of 'speaker' making a 'backchannel' in the close future
+            # over these negatives this probability should be low -> 0
+            # so no change of probability have to be made (only the labels are now zero)
+            pred_bc = p_bc[b, start:end, speaker]  # 1-shift = Hold
+            preds["pred_backchannel"].append(
+                pred_bc
+            )  # Negatives are zero -> hold predictions
+            targets["pred_backchannel"].append(torch.zeros_like(pred_bc))
+        ###########################################
+        # Long vs Shoft
+        ###########################################
+        # TODO: Should this be the same as backchannel
+        # or simply next speaker probs?
+        for start, end, speaker in events["long"][b]:
+            # prob of next speaker -> the correct next speaker i.e. a LONG
+            plong = p[b, start:end, speaker]
+            preds["ls"].append(plong)
+            targets["ls"].append(torch.ones_like(plong))
+        for start, end, speaker in events["short"][b]:
+            # the speaker in the 'short' events is the speaker who
+            # utters a short utterance: p[b, start:end, speaker] means:
+            # the  speaker saying something short has this probability
+            # of continue as a 'long'
+            # Therefore to correctly predict a 'short' entry this probability
+            # should be low -> 0
+            # thus we do not have to subtract the prob from 1 (only the labels are now zero)
+            # prob of next speaker -> the correct next speaker i.e. a SHORT
+            pshort = p[b, start:end, speaker]  # 1-shift = Hold
+            preds["ls"].append(pshort)
+            # Negatives are zero -> short predictions
+            targets["ls"].append(torch.zeros_like(pshort))
+
+    # cat/stack/flatten to single tensor
+    for k, v in preds.items():
+        preds[k] = torch.cat(v)
+    for k, v in targets.items():
+        targets[k] = torch.cat(v).long()
+    return preds, targets
+
+
+def how_to_use_with_model():
+    import matplotlib.pyplot as plt
+    from datasets_turntaking import DialogAudioDM
+    from tqdm import tqdm
+
+    from vap_turn_taking.plot_utils import plot_vad_oh
+    from vap_turn_taking.events import TurnTakingEventsNew
+    from vap_turn_taking.vap_new import VAP
+
+    dm = DialogAudioDM(
+        datasets=["switchboard", "fisher"],
+        audio_duration=20,
+        batch_size=20,
+        num_workers=4,
+    )
+    dm.prepare_data()
+    dm.setup()
+
+    eventer = TurnTakingEventsNew(max_time=dm.audio_duration)
+    vap_objective = VAP()
+    print(dm)
+    print(vap_objective)
+    print("-" * 40)
+    print(eventer)
+    batch = next(iter(dm.val_dataloader()))
+
+    # Training
+    # out = model(waveform=batch["waveform"], va=va_input, va_history=vah_input)
+    ######################################################
+    # Model forward
+    ######################################################
+    logits = torch.rand((*batch["vad"].shape[:-1], vap_objective.n_classes))
+    print("logits: ", tuple(logits.shape))
+
+    ######################################################
+    # VAP-head output: p, p_bc, labels, probs
+    ######################################################
+    vap_out = vap_objective(logits=logits, va=batch["vad"])
+    for k, v in vap_out.items():
+        if isinstance(v, torch.Tensor):
+            print(f"{k}: {tuple(v.shape)}")
+        else:
+            print(f"{k}: {v}")
+
+    ######################################################
+    # Events:   'pred_backchannel', 'pred_backchannel_neg',
+    #           'shift', 'hold',
+    #           'long', 'short',
+    #           'pred_shift', 'pred_shift_neg'
+    ######################################################
+    events = eventer(batch["vad"])
+    for k, v in events.items():
+        if isinstance(v, torch.Tensor):
+            print(f"{k}: {tuple(v.shape)}")
+        else:
+            print(f"{k}: {v}")
+
+    # returns dict with keys: ['hs', 'pred_shift', 'ls', 'pred_backchannel']
+    preds, targets = extract_prediction_and_targets(
+        p=vap_out["p"], p_bc=vap_out["p_bc"], events=events
+    )
+
+    from torchmetrics import F1Score
+
+    ###########################################
+    # Initialize metrics
+    ###########################################
+    metric_shift_hold = F1Score(num_classes=2, average="weighted", multiclass=True)
+    metric_pred_shift = F1Score(num_classes=2, average="weighted", multiclass=True)
+    metric_pred_backchannel = F1Score(
+        num_classes=2, average="weighted", multiclass=True
+    )
+    metric_long_short = F1Score(
+        num_classes=2, threshold=0.5, average="weighted", multiclass=True
+    )
+
+    ###########################################
+    # Update metrics (validation_step)
+    ###########################################
+    metric_shift_hold.update(preds=preds["hs"], target=targets["hs"])
+    metric_pred_shift.update(preds=preds["pred_shift"], target=targets["pred_shift"])
+    metric_pred_backchannel.update(
+        preds=preds["pred_backchannel"], target=targets["pred_backchannel"]
+    )
+    metric_long_short.update(preds=preds["ls"], target=targets["ls"])
+
+    sh = metric_shift_hold.compute()
+    ps = metric_pred_shift.compute()
+    pbc = metric_pred_backchannel.compute()
+    ls = metric_long_short.compute()
+
+    print("SH F1: ", sh)
+    print("LS F1: ", ls)
+    print("pred-S F1: ", ps)
+    print("pred-BC F1: ", pbc)
+
+    print("Shift vs Hold")
+    print("fn: ", metric_shift_hold.fn)
+    print("fp: ", metric_shift_hold.fp)
+    print("tp: ", metric_shift_hold.tp)
+    print("tn: ", metric_shift_hold.tn)
+    print("support: ", metric_shift_hold.tp + metric_shift_hold.fn)
+
+    b = 0
+    fig, [ax, ax1] = plt.subplots(2, 1, figsize=(9, 6))
+    _ = plot_vad_oh(batch["vad"][b], ax=ax)
+    _ = plot_vad_oh(batch["vad"][b], ax=ax1)
+    ax.axvline(eventer.min_context_frames, linewidth=4, color="k")
+    ax.axvline(logits.shape[1], linewidth=4, color="k")
+    for start, end, speaker in events["pred_shift_neg"][b]:
+        ymin, ymax = 0, 1
+        if speaker == 1:
+            ymin, ymax = -1, 0
+        ax1.vlines(start, ymin=ymin, ymax=ymax, color="g", linewidth=2)
+        ax1.vlines(end, ymin=ymin, ymax=ymax, color="r", linewidth=2)
+    plt.pause(0.1)
 
 
 if __name__ == "__main__":
