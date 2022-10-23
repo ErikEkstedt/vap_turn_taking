@@ -21,6 +21,10 @@ MAX_FRAME: int = 500
 @pytest.fixture
 def data():
     data = torch.load("example/vap_data.pt")
+    if torch.cuda.is_available():
+        data["shift"]["vad"] = data["shift"]["vad"].to("cuda")
+        data["bc"]["vad"] = data["bc"]["vad"].to("cuda")
+        data["only_hold"]["vad"] = data["only_hold"]["vad"].to("cuda")
     return data
 
 

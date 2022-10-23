@@ -84,7 +84,9 @@ def fill_pauses(
         return vad
 
     triads = v.unfold(0, size=3, step=1)
-    next_speaker, steps = torch.where((triads == TRIAD_HOLD.unsqueeze(1)).sum(-1) == 3)
+    next_speaker, steps = torch.where(
+        (triads == TRIAD_HOLD.unsqueeze(1).to(triads.device)).sum(-1) == 3
+    )
     for ns, pre in zip(next_speaker, steps):
         cur = pre + 1
         # Fill the matching template
@@ -131,9 +133,9 @@ def hold_shift_regions_simple(
 
     triads = states.unfold(0, size=3, step=1)
 
-    shifts = _get_regions(triads, indices, TRIAD_SHIFT)
-    shift_overlap = _get_regions(triads, indices, TRIAD_SHIFT_OVERLAP)
-    holds = _get_regions(triads, indices, TRIAD_HOLD)
+    shifts = _get_regions(triads, indices, TRIAD_SHIFT.to(vad.device))
+    shift_overlap = _get_regions(triads, indices, TRIAD_SHIFT_OVERLAP.to(vad.device))
+    holds = _get_regions(triads, indices, TRIAD_HOLD.to(vad.device))
 
     return shifts, shift_overlap, holds
 
@@ -322,7 +324,7 @@ def hold_shift_regions(
     shifts, pred_shifts, long_onset = get_hs_regions(
         triads=triads,
         filled_vad=filled_vad,
-        triad_label=TRIAD_SHIFT,
+        triad_label=TRIAD_SHIFT.to(vad.device),
         start_of=start_of,
         duration_of=duration_of,
         pre_cond_frames=pre_cond_frames,
@@ -340,7 +342,7 @@ def hold_shift_regions(
     holds, pred_holds, _ = get_hs_regions(
         triads=triads,
         filled_vad=filled_vad,
-        triad_label=TRIAD_HOLD,
+        triad_label=TRIAD_HOLD.to(vad.device),
         start_of=start_of,
         duration_of=duration_of,
         pre_cond_frames=pre_cond_frames,
