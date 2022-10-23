@@ -31,6 +31,9 @@ def test_backchannel_new():
         )
     )
 
+    if torch.cuda.is_available():
+        vad = vad.to("cuda")
+
     BC = BackchannelNew(
         pre_cond_time=1.0,
         post_cond_time=1.0,

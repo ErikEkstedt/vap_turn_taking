@@ -385,7 +385,9 @@ def backchannel_regions(
         if len(states) < 3:
             continue
         triads = states.unfold(0, size=3, step=1)
-        steps = torch.where((triads == TRIAD_BC.unsqueeze(0)).sum(-1) == 3)[0]
+        steps = torch.where(
+            (triads == TRIAD_BC.to(triads.device).unsqueeze(0)).sum(-1) == 3
+        )[0]
         if len(steps) == 0:
             continue
         for pre_silence in steps:
