@@ -373,7 +373,7 @@ class TurnTakingEventsNew:
 
     @torch.no_grad()
     def __call__(
-        self, vad: torch.Tensor, max_frame: Optional[int] = None
+        self, vad: torch.Tensor, max_time: Optional[float] = None
     ) -> Dict[str, List[List[Tuple[int, int, int]]]]:
         assert (
             vad.ndim == 3
@@ -381,8 +381,8 @@ class TurnTakingEventsNew:
         ret = {}
 
         ds = VF.get_dialog_states(vad)
-        bc = self.BC(vad, ds=ds, max_frame=max_frame)
-        hs = self.HS(vad, ds=ds, max_frame=max_frame)
+        bc = self.BC(vad, ds=ds, max_time=max_time)
+        hs = self.HS(vad, ds=ds, max_time=max_time)
 
         ret.update(bc)
         ret.update(hs)

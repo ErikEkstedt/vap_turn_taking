@@ -182,6 +182,7 @@ class BackchannelNew:
         self.negatives_min_pad_left_time = negative_pad_left_time
         self.negatives_min_pad_right_time = negative_pad_right_time
         self.min_context_time = min_context_time
+        self.frame_hz = frame_hz
         self.max_time = max_time
 
         assert (
@@ -241,12 +242,13 @@ class BackchannelNew:
         self,
         vad: torch.Tensor,
         ds: Optional[torch.Tensor] = None,
-        max_frame: Optional[int] = None,
+        max_time: Optional[float] = None,
     ):
         batch_size = vad.shape[0]
 
-        if max_frame is None:
-            max_frame = self.max_frame
+        max_frame = self.max_frame
+        if max_time is not None:
+            max_frame = time_to_frames(max_time, self.max_frame)
 
         if ds is None:
             ds = VF.get_dialog_states(vad)

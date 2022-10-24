@@ -450,6 +450,7 @@ class HoldShiftNew:
         self.min_silence_time = min_silence_time
         self.min_context_time = min_context_time
         self.max_time = max_time
+        self.frame_hz = frame_hz
 
         # Frames
         self.pre_cond_frame = time_to_frames(pre_cond_time, frame_hz)
@@ -487,14 +488,15 @@ class HoldShiftNew:
         self,
         vad: torch.Tensor,
         ds: Optional[torch.Tensor] = None,
-        max_frame: Optional[int] = None,
+        max_time: Optional[int] = None,
     ) -> Dict[str, List[List[Tuple[int, int, int]]]]:
         assert (
             vad.ndim == 3
         ), f"Expected vad.ndim=3 (B, N_FRAMES, 2) but got {vad.shape}"
 
-        if max_frame is None:
-            max_frame = self.max_frame
+        max_frame = self.max_frame
+        if max_time is not None:
+            max_frame = time_to_frames(max_time, self.frame_hz)
 
         batch_size = vad.shape[0]
 
