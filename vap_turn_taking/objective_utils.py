@@ -85,9 +85,15 @@ def extract_prediction_and_targets(
 
     # cat/stack/flatten to single tensor
     for k, v in preds.items():
-        preds[k] = torch.cat(v)
+        if len(v) > 0:
+            preds[k] = torch.cat(v)
+        else:
+            preds[k] = None
     for k, v in targets.items():
-        targets[k] = torch.cat(v).long()
+        if len(v) > 0:
+            targets[k] = torch.cat(v).long()
+        else:
+            preds[k] = None
     return preds, targets
 
 
