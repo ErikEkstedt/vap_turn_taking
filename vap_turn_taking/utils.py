@@ -1,6 +1,13 @@
 import torch
 import torch.nn.functional as F
 from einops import rearrange
+import json
+
+
+def read_json(path, encoding="utf8"):
+    with open(path, "r", encoding=encoding) as f:
+        data = json.loads(f.read())
+    return data
 
 
 def time_to_frames(time: float, frame_hz: int) -> int:

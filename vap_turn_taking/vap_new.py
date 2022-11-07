@@ -79,16 +79,37 @@ def __comp_main():
 
 if __name__ == "__main__":
 
+    from vap_turn_taking.utils import read_json
+    import matplotlib.pyplot as plt
     import torch
 
     data = torch.load("example/vap_data.pt")
+    out = read_json("example/test_probs.json")
 
     vap_objective = VAP()
     print()
     print(vap_objective)
-    vad = data["shift"]["vad"]
-    logits = torch.rand((1, 600, 256)) / 256
-    out = vap_objective(logits, vad)
+
+    # vad = data["shift"]["vad"]
+    # logits = torch.rand((1, 600, 256)) / 256
+    # out = vap_objective(logits, vad)
+
+    p = torch.tensor(out["p"]).unsqueeze(0)
+    print("p: ", tuple(p.shape))
+    probs = torch.tensor(out["probs"]).unsqueeze(0)
+    print("probs: ", tuple(probs.shape))
+    vad = torch.tensor(out["vad"]).unsqueeze(0)
+    vad = (vad > 0.5).float()
+    print("vad: ", tuple(vad.shape))
+
+    fig, ax = plt.subplots(2, 1, figsize=(12, 4))
+    ax[0].plot(p[0, :, 0])
+    ax[0].plot(vad[0, :, 0])
+    ax[0].axhline(0.5, color="k")
+    for a in ax:
+        a.set_ylim([0, 1.05])
+    plt.pause(0.1)
+
     labels = vap_objective.extract_labels(vad)
     loss = vap_objective.loss_fn(logits, labels)
     print("-" * 45)

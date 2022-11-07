@@ -279,6 +279,24 @@ class DiscreteVAP(nn.Module):
         p_next_speaker = Probs.next_speaker_probs(va, sil_probs, act_probs)
         return p_next_speaker
 
+    def probs_next_speaker_aggregate(
+        self, probs: torch.Tensor, from_bin: int = 0, scale_with_bins: bool = False
+    ) -> torch.Tensor:
+        assert (
+            probs.ndim == 3
+        ), f"Expected probs of shape (B, n_frames, n_classes) but got {probs.shape}"
+        idx = torch.arange(self.n_classes).to(probs.device)
+        states = self.idx_to_proj_win(idx)
+
+        if scale_with_bins:
+            states = states * torch.tensor(self.bin_frames)
+        abp = states[:, :, from_bin:].sum(-1)  # sum speaker activity bins
+        # Dot product over all states
+        p_all = torch.einsum("bid,dc->bic", probs, abp)
+        # normalize
+        p_all /= p_all.sum(-1, keepdim=True) + 1e-5
+        return p_all
+
     def proj_win_to_idx(self, x: torch.Tensor) -> torch.Tensor:
         """
         The inverse of the 'forward' function.
@@ -389,18 +407,80 @@ class DiscreteVAP(nn.Module):
         # Probs
         probs = self.logits_to_probs(logits[..., :n_valid_frames, :])
         p = self.probs_next_speaker(probs=probs, va=va[..., :n_valid_frames, :])
+        p_all = self.probs_next_speaker_aggregate(
+            probs=probs, from_bin=1, scale_with_bins=False
+        )
         p_bc = self.probs_backchannel(probs)
-        return {"probs": probs, "p": p, "p_bc": p_bc, "labels": labels}
+        return {"probs": probs, "p": p, "p_all": p_all, "p_bc": p_bc, "labels": labels}
 
 
 if __name__ == "__main__":
-
-    data = torch.load("example/vap_data.pt")
+    from vap_turn_taking.utils import read_json
+    import matplotlib.pyplot as plt
 
     vap_objective = DiscreteVAP()
-    vad = data["shift"]["vad"]
-    logits = torch.rand((1, 600, 256)) / 256
-    out = vap_objective(logits, vad)
+    # data = torch.load("example/vap_data.pt")
+    # vad = data["shift"]["vad"]
+    # logits = torch.rand((1, 600, 256)) / 256
+    # out = vap_objective(logits, vad)
+    # out = read_json("example/test_out.json")
+    out = read_json("example/her_out.json")
+
+    p = torch.tensor(out["p"]).unsqueeze(0)[..., :-1, :]
+    probs = torch.tensor(out["probs"]).unsqueeze(0)[..., :-1, :]
+    vad = torch.tensor(out["vad"]).unsqueeze(0)[..., :-1, :]
+    vad = (vad > 0.5).float()
+    print("p: ", tuple(p.shape))
+    print("probs: ", tuple(probs.shape))
+    print("vad: ", tuple(vad.shape))
+
+    n = 0
+    p0 = vap_objective.probs_next_speaker_aggregate(probs, n, True)
+    p0n = vap_objective.probs_next_speaker_aggregate(probs, n, False)
+    p1 = vap_objective.probs_next_speaker_aggregate(probs, 1, True)
+    p1n = vap_objective.probs_next_speaker_aggregate(probs, 1, False)
+    p2 = vap_objective.probs_next_speaker_aggregate(probs, 2, True)
+    p2n = vap_objective.probs_next_speaker_aggregate(probs, 2, False)
+    fig, ax = plt.subplots(1, 1, figsize=(24, 4))
+    ax = [ax]
+    ax[0].plot(p[0, :, 0], color="g", alpha=0.2, linewidth=5, label="zero-shot")
+    # ax[0].plot(p0[0, :, 0], color="orange", alpha=0.9, linewidth=2, label=f"all 0 scale")
+    # ax[0].plot(p0n[0, :, 0], color="darkred", alpha=0.9, linewidth=2, label=f"all 0")
+    ax[0].plot(p1n[0, :, 0], color="red", alpha=0.9, linewidth=2, label=f"all 1")
+    # ax[0].plot(p2n[0, :, 0], color="darkblue", alpha=0.9, linewidth=2, label=f"all 2")
+    ax[0].plot(vad[0, :, 0] * 0.5 + 0.5, color="blue", linewidth=2)
+    ax[0].plot(vad[0, :, 1] * 0.45, color="orange", linewidth=2)
+    ax[0].axhline(0.5, color="k")
+    ax[0].axhline(0.6, color="k", linestyle="dashed")
+    ax[0].axhline(0.4, color="k", linestyle="dashed")
+    ax[0].set_ylim([0, 1.05])
+    ax[0].legend()
+    ###############################################################
+    # ax[1].plot(p[0, :, 0], color="g", alpha=0.2, linewidth=5, label="zero-shot")
+    # ax[1].plot(p1[0, :, 0], color="red", alpha=0.9, linewidth=2, label=f"all 1 scale")
+    # ax[1].plot(p1n[0, :, 0], color="orange", alpha=0.9, linewidth=2, label=f"all 1")
+    # ax[1].plot(vad[0, :, 0] * 0.5 + 0.5, color="blue", linewidth=2)
+    # ax[1].plot(vad[0, :, 1] * 0.45, color="orange", linewidth=2)
+    # ax[1].axhline(0.5, color="k")
+    # ax[1].axhline(0.6, color="k", linestyle="dashed")
+    # ax[1].axhline(0.4, color="k", linestyle="dashed")
+    # ax[1].set_ylim([0, 1.05])
+    # ax[1].legend()
+    # ###############################################################
+    # ax[2].plot(p[0, :, 0], color="g", alpha=0.2, linewidth=5, label="zero-shot")
+    # ax[2].plot(p2[0, :, 0], color="red", alpha=0.9, linewidth=2, label=f"all 2 scale")
+    # ax[2].plot(p2n[0, :, 0], color="orange", alpha=0.9, linewidth=2, label=f"all 2")
+    # ax[2].plot(vad[0, :, 0] * 0.5 + 0.5, color="blue", linewidth=2)
+    # ax[2].plot(vad[0, :, 1] * 0.45, color="orange", linewidth=2)
+    # ax[2].axhline(0.5, color="k")
+    # ax[2].axhline(0.6, color="k", linestyle="dashed")
+    # ax[2].axhline(0.4, color="k", linestyle="dashed")
+    # ax[2].set_ylim([0, 1.05])
+    # ax[2].legend()
+    ###############################################################
+    plt.tight_layout()
+    plt.pause(0.1)
+
     labels = vap_objective.extract_labels(vad)
     loss = vap_objective.loss_fn(logits, labels)
     print("vad: ", tuple(vad.shape))
