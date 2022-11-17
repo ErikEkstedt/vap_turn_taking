@@ -280,7 +280,11 @@ class DiscreteVAP(nn.Module):
         return p_next_speaker
 
     def probs_next_speaker_aggregate(
-        self, probs: torch.Tensor, from_bin: int = 0, scale_with_bins: bool = False
+        self,
+        probs: torch.Tensor,
+        from_bin: int = 0,
+        to_bin: int = 3,
+        scale_with_bins: bool = False,
     ) -> torch.Tensor:
         assert (
             probs.ndim == 3
@@ -290,7 +294,7 @@ class DiscreteVAP(nn.Module):
 
         if scale_with_bins:
             states = states * torch.tensor(self.bin_frames)
-        abp = states[:, :, from_bin:].sum(-1)  # sum speaker activity bins
+        abp = states[:, :, from_bin : to_bin + 1].sum(-1)  # sum speaker activity bins
         # Dot product over all states
         p_all = torch.einsum("bid,dc->bic", probs, abp)
         # normalize

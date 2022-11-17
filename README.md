@@ -3,6 +3,13 @@
 
 Voice Activity Projection module used in the paper [Voice Activity Projection: Self-supervised Learning of Turn-taking Events]().
 
+* VAP-head
+  - An NN 'layer' which extracts VAP-labels (discrete, independent, comparative), projection-windows to states, define zero-shot probabilities.
+* Events
+  - Automatically extract turn-taking events given Voice Activity (e.g. tensor: `(B, N_FRAMES, 2)`) for two speakers
+* Metrics
+  - [Torchmetrics](https://torchmetrics.readthedocs.io/en/latest/)
+
 
 ## Installation
 
@@ -14,9 +21,8 @@ Install `vap_turn_taking`
 * Install dependencies: `pip install -r requirements.txt`
 * Install package: `pip install -e . `
 
+
 ## VAP
-
-
 See section 2 of the [paper]().
 
 The Voice Acticity Projection module extract model ('discrete', 'independent',
