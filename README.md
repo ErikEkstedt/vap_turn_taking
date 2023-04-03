@@ -1,6 +1,17 @@
 # VAP: Voice Activity Projection
 
 
+WARNING: This is not actively maintained! 
+
+Checkout [VoiceActivityProjection](https://github.com/ErikEkstedt/VoiceActivityProjection) for full model and 'vapper' modules.
+The code relevant for this codebase can be in the following files:
+- [vap/objective.py](https://github.com/ErikEkstedt/VoiceActivityProjection/blob/main/vap/objective.py)
+- [vap/events.py](https://github.com/ErikEkstedt/VoiceActivityProjection/blob/main/vap/events.py)
+
+-------------------------------------------------
+
+# VAP: Voice Activity Projection
+
 Voice Activity Projection module used in the paper [Voice Activity Projection: Self-supervised Learning of Turn-taking Events]().
 
 * VAP-head
